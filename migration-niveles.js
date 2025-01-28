@@ -20,8 +20,25 @@ const xlsx = require('xlsx');
 
     const workbookPersonal = xlsx.readFile('Personal_Al_23012025.xlsx');
     const sheetPersonal = workbookPersonal.Sheets[workbookPersonal.SheetNames[0]];
-    const personalData = xlsx.utils.sheet_to_json(sheetPersonal);
-    console.log(`Datos cargados desde el archivo de personal: ${personalData.length} registros`);
+
+    // Mapeo de nombres de columnas del archivo de personal
+    const columnMapping = {
+      Vicepresidencia: 'VP',
+      Departamento: 'Departamento',
+      Secciones: 'Seccion',
+      Equipo: 'Equipo',
+      Grupo: 'Grupo'
+    };
+
+    const personalData = xlsx.utils.sheet_to_json(sheetPersonal).map(row => {
+      const mappedRow = {};
+      for (const [oldKey, newKey] of Object.entries(columnMapping)) {
+        mappedRow[newKey] = row[oldKey] || null;
+      }
+      mappedRow['Cedula'] = row['Cedula'] || null; // Asegúrate de incluir la columna de Cédula
+      return mappedRow;
+    });
+    console.log(`Datos transformados desde el archivo de personal: ${personalData.length} registros`);
 
     const niveles = [
       { nivel: 'VP',           table: 'nomnivel1' },
@@ -71,12 +88,12 @@ const xlsx = require('xlsx');
 
     const tempPersonalData = personalData
       .map(row => [
-        row.Cedula || null,
-        row.VP || null,
-        row.Departamento || null,
-        row.Seccion || null,
-        row.Equipo || null,
-        row.Grupo || null
+        row.Cedula,
+        row.VP,
+        row.Departamento,
+        row.Seccion,
+        row.Equipo,
+        row.Grupo
       ])
       .filter(row => row[0]); // Excluye filas sin Cédula
 
@@ -100,7 +117,7 @@ const xlsx = require('xlsx');
       const query = `
         UPDATE temp_personal tp
         JOIN ${table} nn 
-          ON tp.${nivel} = nn.descrip COLLATE utf8mb3_general_ci
+          ON TRIM(LOWER(tp.${nivel})) = TRIM(LOWER(nn.descrip))
         JOIN nompersonal np 
           ON tp.cedula = np.cedula
         SET np.${codnivel} = nn.codorg
