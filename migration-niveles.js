@@ -59,12 +59,12 @@ const xlsx = require('xlsx');
 
     await connection.execute(`
       CREATE TEMPORARY TABLE temp_personal (
-        cedula VARCHAR(50) COLLATE utf8mb3_general_ci,
-        VP VARCHAR(255) COLLATE utf8mb3_general_ci,
-        Departamento VARCHAR(255) COLLATE utf8mb3_general_ci,
-        Seccion VARCHAR(255) COLLATE utf8mb3_general_ci,
-        Equipo VARCHAR(255) COLLATE utf8mb3_general_ci,
-        Grupo VARCHAR(255) COLLATE utf8mb3_general_ci
+        cedula VARCHAR(50),
+        VP VARCHAR(255),
+        Departamento VARCHAR(255),
+        Seccion VARCHAR(255),
+        Equipo VARCHAR(255),
+        Grupo VARCHAR(255)
       )
     `);
     console.log("Tabla temporal 'temp_personal' creada.");
