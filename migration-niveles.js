@@ -1,134 +1,112 @@
 const mysql = require('mysql2/promise');
 const xlsx = require('xlsx');
+const dbConfig = require('./dbconfig');
+require('dotenv').config();
 
 (async () => {
-  const dbConfig = {
-    host: '172.31.203.5',
-    user: 'root',
-    password: '4m4x0n14-41ts4',
-    database: 'aitsa_rrhh'
-  };
-
   try {
     const connection = await mysql.createConnection(dbConfig);
-    console.log("Conexión exitosa a MySQL");
+    console.log("✅ Conexión exitosa a MySQL");
 
-    const workbookEstructura = xlsx.readFile('EstructuraOrganizacional.xlsx');
-    const sheetEstructura = workbookEstructura.Sheets[workbookEstructura.SheetNames[0]];
-    const estructuraData = xlsx.utils.sheet_to_json(sheetEstructura);
-    console.log(`Datos cargados desde el archivo de estructura: ${estructuraData.length} registros`);
-
+    // Leer el archivo Excel
     const workbookPersonal = xlsx.readFile('Personal_Al_23012025.xlsx');
     const sheetPersonal = workbookPersonal.Sheets[workbookPersonal.SheetNames[0]];
 
-    // Mapeo de nombres de columnas del archivo de personal
+    // Mapeo de nombres de columnas
     const columnMapping = {
       Vicepresidencia: 'VP',
       Departamento: 'Departamento',
       Secciones: 'Seccion',
       Equipo: 'Equipo',
-      Grupo: 'Grupo'
+      Grupo: 'Grupo',
     };
 
+    // Convertir el archivo Excel en JSON
     const personalData = xlsx.utils.sheet_to_json(sheetPersonal).map(row => {
       const mappedRow = {};
       for (const [oldKey, newKey] of Object.entries(columnMapping)) {
         mappedRow[newKey] = row[oldKey] || null;
       }
-      mappedRow['Cedula'] = row['Cedula'] || null; // Asegúrate de incluir la columna de Cédula
+      mappedRow['Cedula'] = row['Cedula'] || null;
       return mappedRow;
     });
-    console.log(`Datos transformados desde el archivo de personal: ${personalData.length} registros`);
+
+    console.log(`📌 Datos transformados: ${personalData.length} registros`);
 
     const niveles = [
-      { nivel: 'VP',           table: 'nomnivel1' },
+      { nivel: 'VP', table: 'nomnivel1' },
       { nivel: 'Departamento', table: 'nomnivel2' },
-      { nivel: 'Seccion',      table: 'nomnivel3' },
-      { nivel: 'Equipo',       table: 'nomnivel4' },
-      { nivel: 'Grupo',        table: 'nomnivel5' }
+      { nivel: 'Seccion', table: 'nomnivel3' },
+      { nivel: 'Equipo', table: 'nomnivel4' },
+      { nivel: 'Grupo', table: 'nomnivel5' },
     ];
 
-    const regexPrefijo = /^\d{1,3}(?:-\d{1,2})*\s+/;
+    let actualizados = 0;
+    let noActualizados = 0;
 
-    for (const { nivel, table } of niveles) {
-      const uniqueValues = Array.from(
-        new Set(estructuraData.map(row => row[nivel]).filter(Boolean))
+    for (const row of personalData) {
+      if (!row.Cedula) {
+        console.warn(`⚠️ Cédula vacía en el registro:`, row);
+        continue;
+      }
+
+      console.log(`🔍 Procesando cédula: ${row.Cedula}`);
+
+      const codorgs = {};
+      for (const { nivel, table } of niveles) {
+        if (!row[nivel]) {
+          codorgs[nivel] = null; // Si no tiene valor, poner NULL
+          continue;
+        }
+
+        const [rowsCheck] = await connection.execute(
+          `SELECT codorg FROM ${table} WHERE TRIM(LOWER(descrip)) = TRIM(LOWER(?)) LIMIT 1`,
+          [row[nivel]]
+        );
+
+        codorgs[nivel] = rowsCheck.length > 0 ? rowsCheck[0].codorg : null;
+      }
+
+      // Verificar si la cédula existe en nompersonal
+      const [checkExisting] = await connection.execute(
+        `SELECT cedula FROM nompersonal WHERE cedula = ?`,
+        [row.Cedula]
       );
 
-      for (const [index, value] of uniqueValues.entries()) {
-        if (table === 'nomnivel5') {
-          await connection.execute(
-            `INSERT IGNORE INTO ${table} (codorg, descrip)
-             VALUES (?, ?)`,
-            [index + 1, value]
-          );
+      if (checkExisting.length === 0) {
+        console.warn(`⚠️ La cédula ${row.Cedula} no existe en nompersonal. Saltando...`);
+        continue;
+      }
+
+      // Construir consulta de actualización
+      const updates = [];
+      const values = [];
+      Object.entries(codorgs).forEach(([nivel, codorg], index) => {
+        updates.push(`codnivel${index + 1} = ?`);
+        values.push(codorg);
+      });
+
+      if (updates.length > 0) {
+        values.push(row.Cedula);
+
+        const query = `UPDATE nompersonal SET ${updates.join(', ')} WHERE cedula = ?`;
+        const [updateResult] = await connection.execute(query, values);
+
+        if (updateResult.affectedRows > 0) {
+          console.log(`✅ Cédula ${row.Cedula} actualizada correctamente.`);
+          actualizados++;
         } else {
-          const descCorta = value.replace(regexPrefijo, '').trim();
-          await connection.execute(
-            `INSERT IGNORE INTO ${table} (codorg, descrip, descripcion_corta)
-             VALUES (?, ?, ?)`,
-            [index + 1, value, descCorta]
-          );
+          console.warn(`⚠️ No se actualizó la cédula ${row.Cedula}.`);
+          noActualizados++;
         }
       }
-      console.log(`Migración completada para '${table}' con ${uniqueValues.length} registros.`);
-    }
-
-    await connection.execute(`
-      CREATE TEMPORARY TABLE temp_personal (
-        cedula VARCHAR(50),
-        VP VARCHAR(255),
-        Departamento VARCHAR(255),
-        Seccion VARCHAR(255),
-        Equipo VARCHAR(255),
-        Grupo VARCHAR(255)
-      )
-    `);
-    console.log("Tabla temporal 'temp_personal' creada.");
-
-    const tempPersonalData = personalData
-      .map(row => [
-        row.Cedula,
-        row.VP,
-        row.Departamento,
-        row.Seccion,
-        row.Equipo,
-        row.Grupo
-      ])
-      .filter(row => row[0]); // Excluye filas sin Cédula
-
-    if (tempPersonalData.length > 0) {
-      const batchSize = 1000;
-      for (let i = 0; i < tempPersonalData.length; i += batchSize) {
-        const batch = tempPersonalData.slice(i, i + batchSize);
-        await connection.query(
-          `INSERT INTO temp_personal (cedula, VP, Departamento, Seccion, Equipo, Grupo)
-           VALUES ?`,
-          [batch]
-        );
-        console.log(`Insertado un lote de ${batch.length} registros en 'temp_personal'.`);
-      }
-    }
-
-    for (let i = 0; i < niveles.length; i++) {
-      const { nivel, table } = niveles[i];
-      const codnivel = `codnivel${i + 1}`;
-
-      const query = `
-        UPDATE temp_personal tp
-        JOIN ${table} nn 
-          ON TRIM(LOWER(tp.${nivel})) = TRIM(LOWER(nn.descrip))
-        JOIN nompersonal np 
-          ON tp.cedula = np.cedula
-        SET np.${codnivel} = nn.codorg
-      `;
-      const [result] = await connection.execute(query);
-      console.log(`Registros actualizados en 'nompersonal' para '${nivel}': ${result.affectedRows}`);
     }
 
     await connection.end();
-    console.log("Conexión cerrada. Proceso completado con éxito.");
+    console.log(`✅ Conexión cerrada. Proceso completado.`);
+    console.log(`🔹 Total de registros actualizados: ${actualizados}`);
+    console.log(`🔹 Total de registros no actualizados: ${noActualizados}`);
   } catch (error) {
-    console.error("Error al conectar o migrar datos:", error);
+    console.error("❌ Error al conectar o migrar datos:", error);
   }
 })();

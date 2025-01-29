@@ -1,14 +1,9 @@
 const mysql = require('mysql2/promise');
 const xlsx = require('xlsx');
+const dbConfig = require('./dbconfig');
+require('dotenv').config();
 
 (async () => {
-  const dbConfig = {
-    host: '172.31.203.5',
-    user: 'root',
-    password: '4m4x0n14-41ts4',
-    database: 'aitsa_rrhh'
-  };
-
   try {
     // Conectar a la base de datos
     const connection = await mysql.createConnection(dbConfig);

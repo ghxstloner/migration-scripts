@@ -1,14 +1,19 @@
 const mysql = require('mysql2/promise');
 const xlsx = require('xlsx');
+const dbConfig = require('./dbconfig');
+require('dotenv').config();
+
+const excelDateToJSDate = (excelDate) => {
+  if (!excelDate) return null; // Si está vacío, retornar null
+  if (typeof excelDate === 'string' && excelDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      return excelDate; // Si ya tiene formato YYYY-MM-DD, devolverlo tal cual
+  }
+  const jsDate = new Date((excelDate - 25569) * 86400 * 1000); // Convertir número de serie Excel a fecha JS
+  return jsDate.toISOString().split('T')[0]; // Formato YYYY-MM-DD
+};
+
 
 (async () => {
-    const dbConfig = {
-        host: '172.31.203.5',
-        user: 'root',
-        password: '4m4x0n14-41ts4',
-        database: 'aitsa_rrhh'
-      };
-
   try {
     const connection = await mysql.createConnection(dbConfig);
     console.log("Conexión exitosa a MySQL");
@@ -66,7 +71,8 @@ const xlsx = require('xlsx');
             gasto_rep_diario = ?,
             rata_hora_gasto_rep = ?,
             aeropuerto = ?,
-            zona_economica = 1
+            zona_economica = 1,
+            fecha_resolucion_baja = ?
         WHERE cedula = ?
       `;
 
@@ -89,12 +95,9 @@ const xlsx = require('xlsx');
         row['GastoRepresentacionDiario'] ?? null,
         row['RataHoraGR'] ?? null,
         row['Aeropuerto'] ?? null,
+        excelDateToJSDate(row['FechaBaja']),
         row['Cedula'], // Clave primaria para identificar la fila
       ];
-
-      // Log para depurar
-      console.log('Query:', query);
-      console.log('Values:', values);
 
       // Ejecutar la consulta
       const [result] = await connection.execute(query, values);
