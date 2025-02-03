@@ -22,8 +22,9 @@ require('dotenv').config();
       // Obtener valores únicos del Excel
       const centrosCosto = new Map();
       for (const row of data) {
-        if (row.CentroCostos && row.Descripcion) {
-          centrosCosto.set(row.CentroCostos, row.Descripcion);
+        if ((row.CentroCostos !== undefined && row.CentroCostos !== null && row.CentroCostos !== '') && 
+            row.Descripcion) {
+            centrosCosto.set(String(row.CentroCostos), row.Descripcion);
         }
       }
 
@@ -164,7 +165,7 @@ require('dotenv').config();
     };
 
     // Procesar las tablas
-    //await procesarCentroCostos();
+    await procesarCentroCostos();
 
     await procesarTabla('aeropuertos', 'Aeropuerto', 'codigo', 'descripcion');
     await procesarTabla('dias_periodo', 'DiasPeriodo', 'cod_dia', 'des_dia', false);
