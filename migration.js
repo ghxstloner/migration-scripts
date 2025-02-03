@@ -58,11 +58,6 @@ const excelDateToJSDate = (excelDate) => {
             banco_sucursal = ?,
             cuentacob = ?,
             cuenta_pago = ?,
-            sindicato = ?,
-            dias_periodo = ?,
-            tipo_periodo = ?,
-            jornada = ?,
-            tipo_sueldo = ?,
             ISRFijoPeriodo = ?,
             suesal = ?,
             salario_diario = ?,
@@ -70,9 +65,10 @@ const excelDateToJSDate = (excelDate) => {
             gastos_representacion = ?,
             gasto_rep_diario = ?,
             rata_hora_gasto_rep = ?,
-            aeropuerto = ?,
             zona_economica = 1,
-            fecha_resolucion_baja = ?
+            fecha_resolucion_baja = ?,
+            numero_carnet = ?,
+            codigo_carnet = ?
         WHERE cedula = ?
       `;
 
@@ -82,11 +78,6 @@ const excelDateToJSDate = (excelDate) => {
         row['Banco'] ?? null,
         row['PersonalCuenta'] ?? null,
         row['CtaDinero'] ?? null,
-        row['Sindicato'] ?? null,
-        row['DiasPeriodo'] ?? null,
-        row['PeriodoTipo'] ?? null,
-        row['Jornada'] ?? null,
-        row['TipoSueldo'] ?? null,
         row['ISRFijoPeriodo'] ?? null,
         row['SueldoMensual'] ?? null,
         row['SueldoDiario'] ?? null,
@@ -94,8 +85,9 @@ const excelDateToJSDate = (excelDate) => {
         row['GR'] ?? null,
         row['GastoRepresentacionDiario'] ?? null,
         row['RataHoraGR'] ?? null,
-        row['Aeropuerto'] ?? null,
         excelDateToJSDate(row['FechaBaja']),
+        row['Personal'] ?? null,
+        row['Personal'] ?? null,
         row['Cedula'], // Clave primaria para identificar la fila
       ];
 
