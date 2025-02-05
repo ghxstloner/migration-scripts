@@ -111,21 +111,21 @@ require('dotenv').config();
    `);
    console.log("Verificación de JOIN:", joinCheck);
    const insertCargoEmpleadoQuery = `
-   INSERT IGNORE INTO cargoempleado (id_empleado, id_cargo, id_nivel, id_rol, fecha_inicio)
-   SELECT 
+   INSERT INTO cargoempleado (id_empleado, id_cargo, id_nivel, id_rol, fecha_inicio)
+   SELECT DISTINCT
      np.personal_id,
-     COALESCE(cd.id_cargo, 0),
-     COALESCE(nc.id_nivel, 0),
-     COALESCE(rc.id_rol, 0),
+     CASE WHEN cd.id_cargo IS NULL THEN NULL ELSE cd.id_cargo END,
+     CASE WHEN nc.id_nivel IS NULL THEN NULL ELSE nc.id_nivel END,
+     CASE WHEN rc.id_rol IS NULL THEN NULL ELSE rc.id_rol END,
      CURRENT_DATE
    FROM nompersonal np
-   INNER JOIN temp_cargos tc ON np.cedula = tc.cedula
-   LEFT JOIN cargodeloitte cd ON tc.cargo = cd.nombre_cargo
-   LEFT JOIN nivelcargo nc ON tc.nivel = nc.nombre_nivel
-   LEFT JOIN rolcargo rc ON tc.rol = rc.nombre_rol
-   WHERE np.personal_id IS NOT NULL 
+   INNER JOIN temp_cargos tc ON TRIM(np.cedula) = TRIM(tc.cedula)
+   LEFT JOIN cargodeloitte cd ON TRIM(tc.cargo) = TRIM(cd.nombre_cargo)
+   LEFT JOIN nivelcargo nc ON TRIM(tc.nivel) = TRIM(nc.nombre_nivel)
+   LEFT JOIN rolcargo rc ON TRIM(tc.rol) = TRIM(rc.nombre_rol)
+   WHERE np.personal_id IS NOT NULL
    AND (tc.cargo IS NOT NULL OR tc.nivel IS NOT NULL OR tc.rol IS NOT NULL)
- `;
+   `;
 
    const [insertResult] = await connection.execute(insertCargoEmpleadoQuery);
    console.log(`Registros insertados en CargoEmpleado: ${insertResult.affectedRows}`);
