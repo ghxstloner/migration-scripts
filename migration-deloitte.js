@@ -111,7 +111,7 @@ require('dotenv').config();
    `);
    console.log("Verificación de JOIN:", joinCheck);
    const insertCargoEmpleadoQuery = `
-   INSERT IGNORE INTO CargoEmpleado (id_empleado, id_cargo, id_nivel, id_rol, fecha_inicio)
+   INSERT IGNORE INTO cargoempleado (id_empleado, id_cargo, id_nivel, id_rol, fecha_inicio)
    SELECT 
      np.personal_id,
      COALESCE(cd.id_cargo, 0),
