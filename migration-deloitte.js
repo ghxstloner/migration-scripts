@@ -65,10 +65,10 @@ require('dotenv').config();
    await connection.execute(`DROP TEMPORARY TABLE IF EXISTS temp_cargos`);
    await connection.execute(`
      CREATE TEMPORARY TABLE temp_cargos (
-       cedula VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
-       cargo VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
-       nivel VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
-       rol VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+       cedula VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci,
+       cargo VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci,
+       nivel VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci,
+       rol VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
      )
    `);
 
