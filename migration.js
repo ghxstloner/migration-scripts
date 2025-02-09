@@ -735,20 +735,20 @@ async function main() {
       };
 
       // Ejecutar migraciones con actualizaciones de progreso
-      // updateProgress(1, 'Migrando Bancos...');
-      // await migrarBancos(connection, data);
+      updateProgress(1, 'Migrando Bancos...');
+      await migrarBancos(connection, data);
 
-      // updateProgress(2, 'Migrando MEF...');
-      // await migrarMEF(connection, data);
+      updateProgress(2, 'Migrando MEF...');
+      await migrarMEF(connection, data);
 
-      // updateProgress(3, 'Migrando Deloitte...');
-      // await migrarDeloitte(connection, data);
+      updateProgress(3, 'Migrando Deloitte...');
+      await migrarDeloitte(connection, data);
 
-      // updateProgress(4, 'Migrando Niveles...');
-      // await migrarNiveles(connection, data);
+      updateProgress(4, 'Migrando Niveles...');
+      await migrarNiveles(connection, data);
 
-      // updateProgress(5, 'Migrando Centro de Costos...');
-      // await migrarCentroCostos(connection, data);
+      updateProgress(5, 'Migrando Centro de Costos...');
+      await migrarCentroCostos(connection, data);
 
       updateProgress(6, 'Migrando Puestos...');
       await migrarPuestos(connection, data);
