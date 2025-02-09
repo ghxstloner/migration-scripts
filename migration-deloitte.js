@@ -6,7 +6,7 @@ require('dotenv').config();
 (async () => {
  try {
    const connection = await mysql.createConnection(dbConfig);
-   console.log("Conexión exitosa a MySQL");
+   
 
    const workbook = xlsx.readFile('Personal_Al_23012025.xlsx');
    const sheetName = workbook.SheetNames[0];
@@ -17,11 +17,8 @@ require('dotenv').config();
    await connection.execute("DELETE FROM cargodeloitte");
    await connection.execute("DELETE FROM nivelcargo"); 
    await connection.execute("DELETE FROM rolcargo");
-   console.log("Tablas limpiadas");
+   
 
-   // Verificar datos del Excel
-   console.log("Muestra de datos del Excel:");
-   console.log(data.slice(0, 2));
 
    // Insertar cargos únicos
    const insertCargoQuery = "INSERT INTO cargodeloitte (id_cargo, nombre_cargo) VALUES (?, ?)";
@@ -41,21 +38,21 @@ require('dotenv').config();
 
      if (cargo && !cargosSet.has(cargo)) {
        await connection.execute(insertCargoQuery, [cargoId, cargo]);
-       console.log(`Cargo insertado: ${cargo}`);
+       
        cargosSet.add(cargo);
        cargoId++;
      }
 
      if (nivel && !nivelesSet.has(nivel)) {
        await connection.execute(insertNivelQuery, [nivelId, nivel]);
-       console.log(`Nivel insertado: ${nivel}`);
+       
        nivelesSet.add(nivel);
        nivelId++;
      }
 
      if (rol && !rolesSet.has(rol)) {
        await connection.execute(insertRolQuery, [rolId, rol]);
-       console.log(`Rol insertado: ${rol}`);
+       
        rolesSet.add(rol);
        rolId++;
      }
@@ -93,14 +90,14 @@ require('dotenv').config();
 
    // Verificar datos en tabla temporal
    const [tempCheck] = await connection.execute('SELECT * FROM temp_cargos LIMIT 5');
-   console.log("Muestra de datos en temp_cargos:", tempCheck);
+   
 
    // Verificar cédula específica
    const [specificCheck] = await connection.execute(
      'SELECT * FROM temp_cargos WHERE cedula = ?',
      ['8-945-1418']
    );
-   console.log("Datos para cédula 8-945-1418:", specificCheck);
+   
 
    // Verificar join con nompersonal
    const [joinCheck] = await connection.execute(`
@@ -109,7 +106,7 @@ require('dotenv').config();
      INNER JOIN temp_cargos tc ON np.cedula = tc.cedula
      LIMIT 5
    `);
-   console.log("Verificación de JOIN:", joinCheck);
+   
    const insertCargoEmpleadoQuery = `
    INSERT INTO cargoempleado (id_empleado, id_cargo, id_nivel, id_rol, fecha_inicio)
    SELECT DISTINCT
@@ -128,10 +125,10 @@ require('dotenv').config();
    `;
 
    const [insertResult] = await connection.execute(insertCargoEmpleadoQuery);
-   console.log(`Registros insertados en CargoEmpleado: ${insertResult.affectedRows}`);
+   
 
    await connection.end();
-   console.log("Proceso completado");
+   
  } catch (error) {
    console.error("Error:", error);
    console.error("Stack:", error.stack);

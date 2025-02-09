@@ -8,18 +8,15 @@ require('dotenv').config();
     const connection = await mysql.createConnection(dbConfig);
     console.log("Conexión exitosa a MySQL");
 
-    // Leer el archivo Excel
     const workbook = xlsx.readFile('Personal_Al_23012025.xlsx');
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const data = xlsx.utils.sheet_to_json(sheet);
     console.log(`Datos cargados desde el Excel: ${data.length} registros`);
 
-    // Función para procesar centro_costos
     const procesarCentroCostos = async () => {
       console.log("\nProcesando Centro de Costos...");
 
-      // Obtener valores únicos del Excel
       const centrosCosto = new Map();
       for (const row of data) {
         if ((row.CentroCostos !== undefined && row.CentroCostos !== null && row.CentroCostos !== '') && 
