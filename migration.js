@@ -571,137 +571,141 @@ async function migrarPuestos(connection, personalData) {
 }
 
 async function migrarInformacionGeneral(connection, personalData) {
-  console.log("\n=== Migrando Información General ===");
-
-  // Crear tabla temporal para la actualización
-  await connection.execute(`
-      CREATE TEMPORARY TABLE temp_info_general (
-          cedula VARCHAR(50),
-          telefonos VARCHAR(100),
-          telefono_celular VARCHAR(100),
-          email VARCHAR(100),
-          dv VARCHAR(10),
-          fecnac DATE,
-          fecha_resolucion_baja DATE,
-          numero_carnet VARCHAR(50),
-          codigo_carnet VARCHAR(50),
-          cuenta_pago VARCHAR(50),
-          isr_fijo_periodo DECIMAL(10,2),
-          suesal DECIMAL(10,2),
-          salario_diario DECIMAL(10,2),
-          rata_x_hr DECIMAL(10,2),
-          gastos_representacion DECIMAL(10,2),
-          gasto_rep_diario DECIMAL(10,2),
-          rata_hora_gasto_rep DECIMAL(10,2)
-      )
-  `);
-
-  // Preparar los datos para inserción
-  const tempData = personalData
-      .map(row => {
-          // Convertir fechas a formato MySQL
-          const fechaNac = row.FechaNacimiento ? formatDate(row.FechaNacimiento) : null;
-          const fechaBaja = row.FechaBaja ? formatDate(row.FechaBaja) : null;
-
-          // Convertir valores numéricos, asegurando que sean números válidos
-          const ISRFijo = parseFloat(row.ISRFijoPeriodo) || 0;
-          const sueldoMensual = parseFloat(row.SueldoMensual) || 0;
-          const sueldoDiario = parseFloat(row.SueldoDiario) || 0;
-          const rataHora = parseFloat(row.RataHora) || 0;
-          const gastosRep = parseFloat(row.GR) || 0;
-          const gastoRepDiario = parseFloat(row.GastoRepresentacionDiario) || 0;
-          const rataHoraGR = parseFloat(row.RataHoraGR) || 0;
-
-          return [
-              row.Cedula || null,
-              row.Telefono || null,
-              row.Telefono || null, // Teléfono celular
-              row.eMail || null,
-              row.DV || null,
-              fechaNac,
-              fechaBaja,
-              row.Personal || null, // Número de carnet
-              row.Personal || null, // Código de carnet
-              row.CtaDinero || null,
-              ISRFijo,
-              sueldoMensual,
-              sueldoDiario,
-              rataHora,
-              gastosRep,
-              gastoRepDiario,
-              rataHoraGR
-          ];
-      })
-      .filter(row => row[0]); // Filtrar solo registros con cédula
-
-  // Función auxiliar para formatear fechas
-  function formatDate(date) {
-      if (!date) return null;
-      
-      // Si es un número de Excel, convertirlo a fecha
-      if (typeof date === 'number') {
-          const excelDate = new Date((date - 25569) * 86400 * 1000);
-          return excelDate.toISOString().split('T')[0];
-      }
-      
-      // Si ya es una fecha en string, asegurarse que esté en formato YYYY-MM-DD
-      try {
-          const parts = date.split('/');
-          if (parts.length === 3) {
-              // Asumiendo formato DD/MM/YYYY
-              return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-          }
-      } catch (e) {
-          console.log(`Error al procesar fecha: ${date}`);
-          return null;
-      }
-      
-      return null;
+    console.log("\n=== Migrando Información General ===");
+  
+    // Crear tabla temporal para la actualización
+    await connection.execute(`
+        CREATE TEMPORARY TABLE temp_info_general (
+            cedula VARCHAR(50),
+            telefonos VARCHAR(100),
+            telefono_celular VARCHAR(100),
+            email VARCHAR(100),
+            dv VARCHAR(10),
+            fecnac DATE,
+            fecha_resolucion_baja DATE,
+            numero_carnet VARCHAR(50),
+            codigo_carnet VARCHAR(50),
+            cuenta_pago VARCHAR(50),
+            isr_fijo_periodo DECIMAL(10,2),
+            suesal DECIMAL(10,2),
+            salario_diario DECIMAL(10,2),
+            rata_x_hr DECIMAL(10,2),
+            gastos_representacion DECIMAL(10,2),
+            gasto_rep_diario DECIMAL(10,2),
+            rata_hora_gasto_rep DECIMAL(10,2),
+            ConceptoBaja VARCHAR(100)
+        )
+    `);
+  
+    // Preparar los datos para inserción
+    const tempData = personalData
+        .map(row => {
+            // Convertir fechas a formato MySQL
+            const fechaNac = row.FechaNacimiento ? formatDate(row.FechaNacimiento) : null;
+            const fechaBaja = row.FechaBaja ? formatDate(row.FechaBaja) : null;
+  
+            // Convertir valores numéricos, asegurando que sean números válidos
+            const ISRFijo = parseFloat(row.ISRFijoPeriodo) || 0;
+            const sueldoMensual = parseFloat(row.SueldoMensual) || 0;
+            const sueldoDiario = parseFloat(row.SueldoDiario) || 0;
+            const rataHora = parseFloat(row.RataHora) || 0;
+            const gastosRep = parseFloat(row.GR) || 0;
+            const gastoRepDiario = parseFloat(row.GastoRepresentacionDiario) || 0;
+            const rataHoraGR = parseFloat(row.RataHoraGR) || 0;
+  
+            return [
+                row.Cedula || null,
+                row.Telefono || null,
+                row.Telefono || null, // Teléfono celular
+                row.eMail || null,
+                row.DV || null,
+                fechaNac,
+                fechaBaja,
+                row.Personal || null, // Número de carnet
+                row.Personal || null, // Código de carnet
+                row.CtaDinero || null,
+                ISRFijo,
+                sueldoMensual,
+                sueldoDiario,
+                rataHora,
+                gastosRep,
+                gastoRepDiario,
+                rataHoraGR,
+                row.ConceptoBaja || null
+            ];
+        })
+        .filter(row => row[0]); // Filtrar solo registros con cédula
+  
+    // Función auxiliar para formatear fechas
+    function formatDate(date) {
+        if (!date) return null;
+        
+        // Si es un número de Excel, convertirlo a fecha
+        if (typeof date === 'number') {
+            const excelDate = new Date((date - 25569) * 86400 * 1000);
+            return excelDate.toISOString().split('T')[0];
+        }
+        
+        // Si ya es una fecha en string, asegurarse que esté en formato YYYY-MM-DD
+        try {
+            const parts = date.split('/');
+            if (parts.length === 3) {
+                // Asumiendo formato DD/MM/YYYY
+                return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+            }
+        } catch (e) {
+            console.log(`Error al procesar fecha: ${date}`);
+            return null;
+        }
+        
+        return null;
+    }
+  
+    // Insertar datos en lotes
+    if (tempData.length > 0) {
+        const batchSize = 1000;
+        const insertTempQuery = `
+            INSERT INTO temp_info_general (
+                cedula, telefonos, telefono_celular, email, dv, fecnac,
+                fecha_resolucion_baja, numero_carnet, codigo_carnet, cuenta_pago,
+                isr_fijo_periodo, suesal, salario_diario, rata_x_hr,
+                gastos_representacion, gasto_rep_diario, rata_hora_gasto_rep,
+                ConceptoBaja
+            ) VALUES ?
+        `;
+  
+        for (let i = 0; i < tempData.length; i += batchSize) {
+            const batch = tempData.slice(i, i + batchSize);
+            await connection.query(insertTempQuery, [batch]);
+        }
+    }
+  
+    // Actualizar la tabla nompersonal
+    const [updateResult] = await connection.execute(`
+        UPDATE nompersonal np
+        JOIN temp_info_general tig ON np.cedula = tig.cedula
+        SET 
+            np.telefonos = tig.telefonos,
+            np.TelefonoCelular = tig.telefono_celular,
+            np.email = tig.email,
+            np.dv = tig.dv,
+            np.fecnac = tig.fecnac,
+            np.fecha_resolucion_baja = tig.fecha_resolucion_baja,
+            np.numero_carnet = tig.numero_carnet,
+            np.codigo_carnet = tig.codigo_carnet,
+            np.cuenta_pago = tig.cuenta_pago,
+            np.ISRFijoPeriodo = tig.isr_fijo_periodo,
+            np.suesal = tig.suesal,
+            np.salario_diario = tig.salario_diario,
+            np.rata_x_hr = tig.rata_x_hr,
+            np.gastos_representacion = tig.gastos_representacion,
+            np.gasto_rep_diario = tig.gasto_rep_diario,
+            np.rata_hora_gasto_rep = tig.rata_hora_gasto_rep,
+            np.ConceptoBaja = tig.ConceptoBaja
+    `);
+  
+    console.log(`Registros actualizados: ${updateResult.affectedRows}`);
   }
-
-  // Insertar datos en lotes
-  if (tempData.length > 0) {
-      const batchSize = 1000;
-      const insertTempQuery = `
-          INSERT INTO temp_info_general (
-              cedula, telefonos, telefono_celular, email, dv, fecnac,
-              fecha_resolucion_baja, numero_carnet, codigo_carnet, cuenta_pago,
-              isr_fijo_periodo, suesal, salario_diario, rata_x_hr,
-              gastos_representacion, gasto_rep_diario, rata_hora_gasto_rep
-          ) VALUES ?
-      `;
-
-      for (let i = 0; i < tempData.length; i += batchSize) {
-          const batch = tempData.slice(i, i + batchSize);
-          await connection.query(insertTempQuery, [batch]);
-      }
-  }
-
-  // Actualizar la tabla nompersonal
-  const [updateResult] = await connection.execute(`
-      UPDATE nompersonal np
-      JOIN temp_info_general tig ON np.cedula = tig.cedula
-      SET 
-          np.telefonos = tig.telefonos,
-          np.TelefonoCelular = tig.telefono_celular,
-          np.email = tig.email,
-          np.dv = tig.dv,
-          np.fecnac = tig.fecnac,
-          np.fecha_resolucion_baja = tig.fecha_resolucion_baja,
-          np.numero_carnet = tig.numero_carnet,
-          np.codigo_carnet = tig.codigo_carnet,
-          np.cuenta_pago = tig.cuenta_pago,
-          np.ISRFijoPeriodo = tig.isr_fijo_periodo,
-          np.suesal = tig.suesal,
-          np.salario_diario = tig.salario_diario,
-          np.rata_x_hr = tig.rata_x_hr,
-          np.gastos_representacion = tig.gastos_representacion,
-          np.gasto_rep_diario = tig.gasto_rep_diario,
-          np.rata_hora_gasto_rep = tig.rata_hora_gasto_rep
-  `);
-
-  console.log(`Registros actualizados: ${updateResult.affectedRows}`);
-}
 
 async function main() {
   let connection;
