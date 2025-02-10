@@ -381,7 +381,8 @@ async function migrarTablasGenerales(connection, data) {
       { nombre: 'tipos_periodo', campo: 'PeriodoTipo', codigo: 'cod_tip', descripcion: 'des_tip' },
       { nombre: 'jornadas', campo: 'Jornada', codigo: 'cod_jor', descripcion: 'des_jor' },
       { nombre: 'tipos_sueldo', campo: 'TipoSueldo', codigo: 'cod_sue', descripcion: 'des_sue' },
-      { nombre: 'sindicatos', campo: 'Sindicato', codigo: 'cod_sin', descripcion: 'des_sin' }
+      { nombre: 'sindicatos', campo: 'Sindicato', codigo: 'cod_sin', descripcion: 'des_sin' },
+      { nombre: 'nivelacademico', campo: 'NivelAcademco', codigo: 'id', descripcion: 'descripcion'}
   ];
   
   try {
@@ -440,6 +441,7 @@ async function migrarTablasGenerales(connection, data) {
                           tabla.nombre === 'tipos_periodo' ? 'cod_tip' :
                           tabla.nombre === 'jornadas' ? 'cod_jor' :
                           tabla.nombre === 'tipos_sueldo' ? 'cod_sue' :
+                          tabla.nombre === 'nivelacademico' ? 'cod_niv' :
                           'cod_sin';
 
         const [updateResult] = await connection.execute(`
