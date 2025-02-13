@@ -247,8 +247,27 @@ async function migrarDeloitte(connection, data) {
     }
   }
 
-async function migrarNiveles(connection, data) {
+  async function migrarNiveles(connection, data) {
     console.log("\n=== Migrando Niveles ===");
+    
+    // Mapeo de nombres de columnas del Excel a nombres internos
+    const columnMapping = {
+        'Vicepresidencia': 'VP',
+        'Departamento': 'Departamento',
+        'Secciones': 'Seccion',
+        'Equipo': 'Equipo',
+        'Grupo': 'Grupo'
+    };
+
+    // Transformar los datos para usar los nombres correctos
+    const mappedData = data.map(row => {
+        const mappedRow = {};
+        for (const [oldKey, newKey] of Object.entries(columnMapping)) {
+            mappedRow[newKey] = row[oldKey] || null;
+        }
+        mappedRow['Cedula'] = row['Cedula'] || null;
+        return mappedRow;
+    });
     
     const niveles = [
         { nivel: 'VP', table: 'nomnivel1' },
@@ -261,7 +280,7 @@ async function migrarNiveles(connection, data) {
     let actualizados = 0;
     let noActualizados = 0;
 
-    for (const row of data) {
+    for (const row of mappedData) {
         if (!row.Cedula) continue;
 
         const codorgs = {};
