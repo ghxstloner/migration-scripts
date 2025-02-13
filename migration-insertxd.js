@@ -683,12 +683,12 @@ async function migrarNiveles(connection, data) {
  
         const [departamentoId] = await connection.execute(
             'SELECT IdDepartamento FROM departamento WHERE Descripcion = ?',
-            [row.Departamento]
+            [row.Departamento ?? null]
         );
- 
+        
         const [funcionId] = await connection.execute(
             'SELECT nomfuncion_id FROM nomfuncion WHERE descripcion_funcion = ?',
-            [row.Puesto]
+            [row.Puesto ?? null]
         );
  
         const apenom = `${row.ApellidoPaterno || ''} ${row.ApellidoMaterno || ''}, ${row.Nombre || ''}`.trim();
