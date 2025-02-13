@@ -692,7 +692,7 @@ async function migrarNiveles(connection, data) {
         );
  
         const apenom = `${row.ApellidoPaterno || ''} ${row.ApellidoMaterno || ''}, ${row.Nombre || ''}`.trim();
-        const foto = row.Cedula ? `fotos/${row.Cedula}` : null;
+        const foto = row.Cedula ? `fotos/${row.Cedula}.jpeg` : null;
         const tipoSangreId = await mapTipoSangre(row.TipoSangre);
 
         return [
