@@ -655,7 +655,6 @@ async function migrarNiveles(connection, data) {
         ).then(([rows]) => rows[0]?.IdTipoSangre || null);
      }
 
-    const tipoSangreId = await mapTipoSangre(row.TipoSangre);
  
     const insertTempQuery = `
         INSERT INTO temp_personal (
@@ -694,7 +693,8 @@ async function migrarNiveles(connection, data) {
  
         const apenom = `${row.ApellidoPaterno || ''} ${row.ApellidoMaterno || ''}, ${row.Nombre || ''}`.trim();
         const foto = row.Cedula ? `fotos/${row.Cedula}` : null;
- 
+        const tipoSangreId = await mapTipoSangre(row.TipoSangre);
+
         return [
             row.Personal || null,
             row.Personal || null,
