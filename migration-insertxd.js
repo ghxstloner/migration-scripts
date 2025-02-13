@@ -647,14 +647,14 @@ async function migrarNiveles(connection, data) {
         return posicion.toString().padStart(4, '0');
     }
 
-    function mapTipoSangre(tipo) {
+    async function mapTipoSangre(tipo) {
         if (!tipo) return null;
-        return connection.execute(
+        const [rows] = await connection.execute(
             'SELECT IdTipoSangre FROM tiposangre WHERE Descripcion = ?', 
-            [tipo.trim()]
-        ).then(([rows]) => rows[0]?.IdTipoSangre || null);
-     }
-
+            [tipo.toString().trim()]
+        );
+        return rows[0]?.IdTipoSangre || null;
+    }
  
     const insertTempQuery = `
         INSERT INTO temp_personal (
@@ -747,7 +747,7 @@ async function migrarNiveles(connection, data) {
             'e10adc3949ba59abbe56e057f20f883e',
             1,
             row.Hijos || null,
-            tipoSangreId || null,
+            tipoSangreId || null
         ];
     }));
  
