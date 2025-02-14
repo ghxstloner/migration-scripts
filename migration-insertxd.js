@@ -2,6 +2,7 @@ const mysql = require('mysql2/promise');
 const xlsx = require('xlsx');
 const dbConfig = require('./dbconfig');
 const cliProgress = require('cli-progress');
+const { mapParentesco } = require('./parentesco-utils');
 require('dotenv').config();
 
 function formatExcelDate(date) {
@@ -593,7 +594,16 @@ async function migrarNiveles(connection, data) {
             usr_password VARCHAR(100),
             proyecto INT,
             Hijos INT,
-            IdTipoSangre INT
+            IdTipoSangre INT,
+            EnfermedadesYAlergias VARCHAR(100),
+            ContactoEmergencia VARCHAR(300),
+            TelefonoEmergencia VARCHAR(100),
+            ParentescoEmergencia INT,
+            DireccionEmergencia VARCHAR(255),
+            ContactoEmergencia2 VARCHAR(300),
+            TelefonoEmergencia2 VARCHAR(100),
+            ParentescoEmergencia2 INT,
+            DireccionEmergencia2 VARCHAR(255)
         )
     `);
  
@@ -666,7 +676,9 @@ async function migrarNiveles(connection, data) {
             gasto_rep_diario, rata_hora_gasto_rep, ConceptoBaja, tipnom, apenom, foto,
             nomposicion_id, codcargo, forcob, cuentacob, created_at, turno_id, 
             fin_periodo, tipo_empleado, observaciones, IdDepartamento, nomfuncion_id,
-            usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre
+            usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre, EnfermedadesYAlergias,
+            ContactoEmergencia, TelefonoEmergencia, ParentescoEmergencia, DireccionEmergencia,
+            ContactoEmergencia2, TelefonoEmergencia2, ParentescoEmergencia2, DireccionEmergencia2
         ) VALUES ?
     `;
  
@@ -694,6 +706,8 @@ async function migrarNiveles(connection, data) {
         const apenom = `${row.ApellidoPaterno || ''} ${row.ApellidoMaterno || ''}, ${row.Nombre || ''}`.trim();
         const foto = row.Cedula ? `fotos/${row.Cedula}.jpeg` : null;
         const tipoSangreId = await mapTipoSangre(row.TipoSangre);
+        const parentescoContacto1 = await mapParentesco(connection, row.ParentescoContacto1);
+        const parentescoContacto2 = await mapParentesco(connection, row.ParentescoContacto2);
 
         return [
             row.Personal || null,
@@ -747,7 +761,16 @@ async function migrarNiveles(connection, data) {
             'e10adc3949ba59abbe56e057f20f883e',
             1,
             row.Hijos || null,
-            tipoSangreId || null
+            tipoSangreId || null,
+            row.Enfermedades || null,
+            row.NombreContacto1 || null,
+            row.CelularContacto1 || null,
+            parentescoContacto1 || null,
+            row.DireccionPariente || null,
+            row.NombreContacto2 || null,
+            row.CelularContacto2 || null,
+            parentescoContacto2 || null,
+            row.DireccionPariente2 || null
         ];
     }));
  
@@ -769,7 +792,9 @@ async function migrarNiveles(connection, data) {
             gasto_rep_diario, rata_hora_gasto_rep, ConceptoBaja, tipnom, apenom, foto,
             nomposicion_id, codcargo, forcob, cuentacob, created_at, turno_id,
             fin_periodo, tipo_empleado, observaciones, IdDepartamento, nomfuncion_id,
-            usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre
+            usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre, EnfermedadesYAlergias,
+            ContactoEmergencia, TelefonoEmergencia, ParentescoEmergencia, DireccionEmergencia,
+            ContactoEmergencia2, TelefonoEmergencia2, ParentescoEmergencia2, DireccionEmergencia2
         )
         SELECT * FROM temp_personal tp
         WHERE NOT EXISTS (
@@ -782,6 +807,7 @@ async function migrarNiveles(connection, data) {
  async function migrarFamiliares(connection, data) {
     console.log("\n=== Migrando Familiares ===");
     
+    // Crear tabla temporal
     await connection.execute(`
         CREATE TEMPORARY TABLE temp_familiares (
             cedula VARCHAR(20),
@@ -810,23 +836,60 @@ async function migrarNiveles(connection, data) {
         )
     `);
 
+    function isDiscapacitado(valor) {
+        if (!valor) return false;
+
+        try {
+            if (typeof valor === 'number') return false;
+
+            const valorLimpio = valor.toString().trim().toUpperCase();
+            
+            return valorLimpio === 'SI';
+        } catch (error) {
+            console.log(`Error procesando valor de discapacidad: ${valor}`, error);
+            return false;
+        }
+    }
+
+    // Procesar familiares
     const familiares = [];
     for (const row of data) {
-        for (let i = 1; i <= 8; i++) {
+        // Procesar el primer beneficiario (sin número)
+        if (row.Beneficiario) {
+            const codpar = await mapParentesco(connection, row.Parentesco);
+            const ficha = row.Personal ? parseInt(row.Personal.replace(/\D/g, ''), 10).toString() : '';
+            
+            familiares.push({
+                cedula: row.Cedula,
+                ficha: ficha,
+                nombre: row.Beneficiario,
+                codpar: codpar,
+                cedula_beneficiario: row.Cedula1 || '',
+                fecha_nac: formatExcelDate(row.BeneficiarioNacimiento),
+                discapacidad: isDiscapacitado(row.Discapacidad1) ? 1 : 0
+            });
+        }
+
+        // Procesar beneficiarios numerados (2-8)
+        for (let i = 2; i <= 8; i++) {
             if (row[`Beneficiario${i}`]) {
+                const codpar = await mapParentesco(connection, row[`Parentesco${i}`]);
+                const ficha = row.Personal ? parseInt(row.Personal.replace(/\D/g, ''), 10).toString() : '';
+                
                 familiares.push({
                     cedula: row.Cedula,
-                    ficha: row.Personal,
+                    ficha: ficha,
                     nombre: row[`Beneficiario${i}`],
-                    codpar: mapParentesco(row[`Parentesco${i}`]),
+                    codpar: codpar,
                     cedula_beneficiario: row[`Cedula${i}`] || '',
                     fecha_nac: formatExcelDate(row[`Beneficiario${i}Nacimiento`]),
-                    discapacidad: row[`Discapacidad${i}`]?.toUpperCase() === 'SI' ? 1 : 0
+                    discapacidad: isDiscapacitado(row[`Discapacidad${i}`]) ? 1 : 0
                 });
             }
         }
     }
 
+    // Insertar en lotes
     if (familiares.length > 0) {
         const insertQuery = `
             INSERT INTO temp_familiares 
@@ -834,6 +897,7 @@ async function migrarNiveles(connection, data) {
             VALUES ?
         `;
 
+        // Procesar por lotes de 1000
         for (let i = 0; i < familiares.length; i += 1000) {
             const batch = familiares.slice(i, i + 1000).map(f => [
                 f.cedula,
@@ -848,10 +912,29 @@ async function migrarNiveles(connection, data) {
         }
     }
 
+    // Migrar a tabla final
     await connection.execute(`
         INSERT INTO nomfamiliares 
-        SELECT * FROM temp_familiares
+        (cedula, ficha, nombre, codpar, sexo, fecha_nac, codgua, costo, 
+         nacionalidad, afiliado, tipnom, cedula_beneficiario, apellido, 
+         niveledu, institucion, tallafranela, tallamono, fam_telf, 
+         fecha_beca, beca, promedionota, vive, discapacidad)
+        SELECT 
+            cedula, ficha, nombre, codpar, sexo, fecha_nac, codgua, costo,
+            nacionalidad, afiliado, tipnom, cedula_beneficiario, apellido,
+            niveledu, institucion, tallafranela, tallamono, fam_telf,
+            fecha_beca, beca, promedionota, vive, discapacidad
+        FROM temp_familiares
+        WHERE NOT EXISTS (
+            SELECT 1 
+            FROM nomfamiliares nf 
+            WHERE nf.cedula = temp_familiares.cedula 
+            AND nf.cedula_beneficiario = temp_familiares.cedula_beneficiario
+        )
     `);
+
+    // Limpiar tabla temporal
+    await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_familiares');
 }
 
  async function main() {
@@ -877,29 +960,29 @@ async function migrarNiveles(connection, data) {
         progressBar.start(totalTasks, 0, { currentTask: 'Iniciando...' });
  
         try {
-            progressBar.update(1, { currentTask: 'Insertando Personal...' });
-            await insertarPersonal(connection, data);
+            // progressBar.update(1, { currentTask: 'Insertando Personal...' });
+            // await insertarPersonal(connection, data);
  
-            progressBar.update(2, { currentTask: 'Migrando Bancos...' });
-            await migrarBancos(connection, data);
+            // progressBar.update(2, { currentTask: 'Migrando Bancos...' });
+            // await migrarBancos(connection, data);
  
-            progressBar.update(3, { currentTask: 'Migrando MEF...' });
-            await migrarMEF(connection, data);
+            // progressBar.update(3, { currentTask: 'Migrando MEF...' });
+            // await migrarMEF(connection, data);
  
-            progressBar.update(4, { currentTask: 'Migrando Deloitte...' });
-            await migrarDeloitte(connection, data);
+            // progressBar.update(4, { currentTask: 'Migrando Deloitte...' });
+            // await migrarDeloitte(connection, data);
  
-            progressBar.update(5, { currentTask: 'Migrando Niveles...' });
-            await migrarNiveles(connection, data);
+            // progressBar.update(5, { currentTask: 'Migrando Niveles...' });
+            // await migrarNiveles(connection, data);
  
-            progressBar.update(6, { currentTask: 'Migrando Centro de Costos...' });
-            await migrarCentroCostos(connection, data);
+            // progressBar.update(6, { currentTask: 'Migrando Centro de Costos...' });
+            // await migrarCentroCostos(connection, data);
  
-            progressBar.update(7, { currentTask: 'Migrando Tablas Generales...' });
-            await migrarTablasGenerales(connection, data);
+            // progressBar.update(7, { currentTask: 'Migrando Tablas Generales...' });
+            // await migrarTablasGenerales(connection, data);
 
-            progressBar.update(8, { currentTask: 'Migrando Puestos...' });
-            await migrarPuestos(connection, data);
+            // progressBar.update(8, { currentTask: 'Migrando Puestos...' });
+            // await migrarPuestos(connection, data);
  
             progressBar.update(9, { currentTask: 'Migrando Familiares...' });
             await migrarFamiliares(connection, data);
