@@ -960,29 +960,29 @@ async function migrarNiveles(connection, data) {
         progressBar.start(totalTasks, 0, { currentTask: 'Iniciando...' });
  
         try {
-            // progressBar.update(1, { currentTask: 'Insertando Personal...' });
-            // await insertarPersonal(connection, data);
+            progressBar.update(1, { currentTask: 'Insertando Personal...' });
+            await insertarPersonal(connection, data);
  
-            // progressBar.update(2, { currentTask: 'Migrando Bancos...' });
-            // await migrarBancos(connection, data);
+            progressBar.update(2, { currentTask: 'Migrando Bancos...' });
+            await migrarBancos(connection, data);
  
-            // progressBar.update(3, { currentTask: 'Migrando MEF...' });
-            // await migrarMEF(connection, data);
+            progressBar.update(3, { currentTask: 'Migrando MEF...' });
+            await migrarMEF(connection, data);
  
-            // progressBar.update(4, { currentTask: 'Migrando Deloitte...' });
-            // await migrarDeloitte(connection, data);
+            progressBar.update(4, { currentTask: 'Migrando Deloitte...' });
+            await migrarDeloitte(connection, data);
  
-            // progressBar.update(5, { currentTask: 'Migrando Niveles...' });
-            // await migrarNiveles(connection, data);
+            progressBar.update(5, { currentTask: 'Migrando Niveles...' });
+            await migrarNiveles(connection, data);
  
-            // progressBar.update(6, { currentTask: 'Migrando Centro de Costos...' });
-            // await migrarCentroCostos(connection, data);
+            progressBar.update(6, { currentTask: 'Migrando Centro de Costos...' });
+            await migrarCentroCostos(connection, data);
  
-            // progressBar.update(7, { currentTask: 'Migrando Tablas Generales...' });
-            // await migrarTablasGenerales(connection, data);
+            progressBar.update(7, { currentTask: 'Migrando Tablas Generales...' });
+            await migrarTablasGenerales(connection, data);
 
-            // progressBar.update(8, { currentTask: 'Migrando Puestos...' });
-            // await migrarPuestos(connection, data);
+            progressBar.update(8, { currentTask: 'Migrando Puestos...' });
+            await migrarPuestos(connection, data);
  
             progressBar.update(9, { currentTask: 'Migrando Familiares...' });
             await migrarFamiliares(connection, data);
