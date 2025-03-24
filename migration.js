@@ -89,7 +89,7 @@ function extractNumericValue(str) {
 
 async function migrarBancos(connection, data) {
     console.log("\n=== Migrando Bancos ===");
-    await connection.execute("DELETE FROM nombancos");
+    await connection.execute("TRUNCATE nombancos");
 
     // Mapeo de bancos a rutas
     const rutasBancos = {
@@ -290,89 +290,6 @@ async function migrarMEF(connection, data) {
     }
 }
 
-async function migrarDeloitte(connection, data) {
-    console.log("\n=== Migrando Deloitte ===");
-    await connection.execute('SET FOREIGN_KEY_CHECKS=0');
-    try {
-        await connection.execute("DELETE FROM cargodeloitte");
-        await connection.execute("DELETE FROM nivelcargo");
-        await connection.execute("DELETE FROM rolcargo");
-
-        const insertCargoQuery = "INSERT INTO cargodeloitte (id_cargo, nombre_cargo) VALUES (?, ?)";
-        const insertNivelQuery = "INSERT INTO nivelcargo (id_nivel, nombre_nivel) VALUES (?, ?)";
-        const insertRolQuery = "INSERT INTO rolcargo (id_rol, nombre_rol) VALUES (?, ?)";
-
-        const cargosSet = new Set();
-        const nivelesSet = new Set();
-        const rolesSet = new Set();
-        let cargoId = 1, nivelId = 1, rolId = 1;
-
-        for (const row of data) {
-            const cargo = row.CargoDeloitte?.trim();
-            const nivel = row.NivelCargo?.trim();
-            const rol = row.RolCargo?.trim();
-
-            if (cargo && !cargosSet.has(cargo)) {
-                await connection.execute(insertCargoQuery, [cargoId++, cargo]);
-                cargosSet.add(cargo);
-            }
-
-            if (nivel && !nivelesSet.has(nivel)) {
-                await connection.execute(insertNivelQuery, [nivelId++, nivel]);
-                nivelesSet.add(nivel);
-            }
-
-            if (rol && !rolesSet.has(rol)) {
-                await connection.execute(insertRolQuery, [rolId++, rol]);
-                rolesSet.add(rol);
-            }
-        }
-
-        await connection.execute(`
-           CREATE TEMPORARY TABLE temp_cargos (
-               numero_carnet VARCHAR(50),
-               cargo VARCHAR(191),
-               nivel VARCHAR(191),
-               rol VARCHAR(191)
-           )
-       `);
-
-        const insertTempQuery = "INSERT INTO temp_cargos (numero_carnet, cargo, nivel, rol) VALUES ?";
-        const tempData = data
-            .map(row => [
-                row.Personal || null,
-                row.CargoDeloitte?.trim() || null,
-                row.NivelCargo?.trim() || null,
-                row.RolCargo?.trim() || null
-            ])
-            .filter(row => row[0] && (row[1] || row[2] || row[3]));
-
-        if (tempData.length > 0) {
-            for (let i = 0; i < tempData.length; i += 1000) {
-                await connection.query(insertTempQuery, [tempData.slice(i, i + 1000)]);
-            }
-        }
-
-        const [updateResult] = await connection.execute(`
-           INSERT INTO cargoempleado (id_empleado, id_cargo, id_nivel, id_rol, fecha_inicio)
-           SELECT DISTINCT
-               np.personal_id,
-               cd.id_cargo,
-               nc.id_nivel,
-               rc.id_rol,
-               CURRENT_DATE
-           FROM nompersonal np
-           INNER JOIN temp_cargos tc ON np.numero_carnet = tc.numero_carnet
-           LEFT JOIN cargodeloitte cd ON TRIM(tc.cargo) = TRIM(cd.nombre_cargo)
-           LEFT JOIN nivelcargo nc ON TRIM(tc.nivel) = TRIM(nc.nombre_nivel)
-           LEFT JOIN rolcargo rc ON TRIM(tc.rol) = TRIM(rc.nombre_rol)
-           WHERE np.personal_id IS NOT NULL
-           AND (tc.cargo IS NOT NULL OR tc.nivel IS NOT NULL OR tc.rol IS NOT NULL)
-       `);
-    } finally {
-        await connection.execute('SET FOREIGN_KEY_CHECKS=1');
-    }
-}
 async function migrarNiveles(connection, data) {
     console.log("\n=== Migrando Niveles ===");
 
@@ -680,7 +597,7 @@ async function migrarTablasGenerales(connection, data) {
     console.log("\n=== Migrando Tablas Generales ===");
  
     const tablas = [
-        { nombre: 'aeropuertos', campo: 'Aeropuerto', codigo: 'codigo', descripcion: 'descripcion', prefijo: 'AER', codigo_pps: 'codigo_pps' },
+        // Quitamos aeropuertos de la lista original
         { nombre: 'dias_periodo', campo: 'DiasPeriodo', codigo: 'cod_dia', descripcion: 'des_dia' },
         { nombre: 'tipos_periodo', campo: 'PeriodoTipo', codigo: 'cod_tip', descripcion: 'des_tip' },
         { nombre: 'jornadas', campo: 'Jornada', codigo: 'cod_jor', descripcion: 'des_jor' },
@@ -689,23 +606,14 @@ async function migrarTablasGenerales(connection, data) {
         { nombre: 'nivelacademico', campo: 'NivelAcademico', codigo: 'id', descripcion: 'descripcion' }
     ];
  
-    // const jornadasAdicionales = [
-    //     '8:00 - 4:30 p.m. Administrativo 40',
-    //     '8:00- 4:30 p.m. de lunes a viernes 45 horas administrativo',
-    //     'Sábados 8:00 a.m. a 1:00 p.m. y de 11:30 a.m. a 4:30 p.m.',
-    //     '9:00 a.m. - 5:00 p.m. Panamá Pacífico',
-    //     '45 ADM',
-    //     '45 ROTATIVO',
-    //     '48 ROTATIVO',
-    //     '48 ADM',
-    //     '40 ADM',
-    //     '40 ROTATIVO'
-    // ];
- 
     await connection.execute('SET FOREIGN_KEY_CHECKS=0');
- 
+    
+    // Primero, manejar los aeropuertos desde un archivo separado
+    await migrarAeropuertos(connection, data);
+    
+    // Luego continuar con las demás tablas
     for (const tabla of tablas) {
-        await connection.execute(`DELETE FROM ${tabla.nombre}`);
+        await connection.execute(`TRUNCATE ${tabla.nombre}`);
  
         let codigo = 1;
         const valoresInsertados = new Set();
@@ -715,20 +623,6 @@ async function migrarTablasGenerales(connection, data) {
             const workbookJornadas = xlsx.readFile('formatos/JornadaLaboral.xlsx');
             const sheetJornadas = workbookJornadas.Sheets[workbookJornadas.SheetNames[0]];
             const jornadasData = xlsx.utils.sheet_to_json(sheetJornadas);
-
-            // Primero las jornadas adicionales
-            // for (const jornada of jornadasAdicionales) {
-            //     const codFormatted = `J${String(codigo).padStart(3, '0')}`;
-            //     await connection.execute(
-            //         `INSERT INTO ${tabla.nombre} (
-            //             ${tabla.codigo}, 
-            //             ${tabla.descripcion}
-            //         ) VALUES (?, ?)`,
-            //         [codFormatted, jornada]
-            //     );
-            //     valoresInsertados.add(jornada);
-            //     codigo++;
-            // }
 
             // Luego las jornadas del Excel
             for (const row of jornadasData) {
@@ -814,30 +708,9 @@ async function migrarTablasGenerales(connection, data) {
                     const codPrefijo = tabla.prefijo || tabla.nombre.charAt(0).toUpperCase();
                     const codFormatted = `${codPrefijo}${String(codigo).padStart(3, '0')}`;
      
-                    let codigoPPS = null;
-                    if (tabla.nombre === 'aeropuertos') {
-                        switch (valor) {
-                            case 'AEROPUERTO INTERNACIONAL PANAMA PACIFICO':
-                                codigoPPS = '4';
-                                break;
-                            case 'AEROPUERTO INTERNACIONAL ENRIQUE A. JIMENEZ':
-                                codigoPPS = '3';
-                                break;
-                            case 'AEROPUERTO INTERNACIONAL SCARLETT MARTINEZ':
-                                codigoPPS = '2';
-                                break;
-                            case 'AEROPUERTO INTERNACIONAL ENRIQUE MALEK':
-                                codigoPPS = '1';
-                                break;
-                            default:
-                                codigoPPS = '0';
-                                break;
-                        }
-                    }
-     
                     await connection.execute(
-                        `INSERT INTO ${tabla.nombre} (${tabla.codigo}, ${tabla.descripcion}${codigoPPS ? `, ${tabla.codigo_pps}` : ''}) VALUES (?, ?${codigoPPS ? ', ?' : ''})`,
-                        [codFormatted, valor, codigoPPS].filter(Boolean)
+                        `INSERT INTO ${tabla.nombre} (${tabla.codigo}, ${tabla.descripcion}) VALUES (?, ?)`,
+                        [codFormatted, valor]
                     );
      
                     valoresInsertados.add(valor);
@@ -868,7 +741,6 @@ async function migrarTablasGenerales(connection, data) {
         }
  
         const campoUpdate = {
-            'aeropuertos': 'cod_aer',
             'dias_periodo': 'cod_dia',
             'tipos_periodo': 'cod_tip',
             'jornadas': 'cod_jor',
@@ -885,6 +757,78 @@ async function migrarTablasGenerales(connection, data) {
         `);
     }
     await connection.execute('SET FOREIGN_KEY_CHECKS=1');
+}
+
+// Nueva función para manejar aeropuertos específicamente
+async function migrarAeropuertos(connection, personalData) {
+    console.log("\n=== Migrando Aeropuertos desde Sucursales.xlsx ===");
+    
+    try {
+        // Limpiar tabla existente
+        await connection.execute("TRUNCATE aeropuertos");
+        
+        // Leer el archivo de Sucursales
+        const workbookSucursales = xlsx.readFile('formatos/Sucursales.xlsx');
+        const sheetSucursales = workbookSucursales.Sheets[workbookSucursales.SheetNames[0]];
+        const sucursalesData = xlsx.utils.sheet_to_json(sheetSucursales);
+        
+        // Insertar aeropuertos desde Sucursales.xlsx
+        for (const row of sucursalesData) {
+            if (row.Sucursal !== undefined && row.Nombre) {
+                const codigo = `AER${String(row.Sucursal).padStart(3, '0')}`;
+                const nombre = row.Nombre.trim();
+                const codigoPPS = row.Sucursal.toString();
+                
+                await connection.execute(
+                    "INSERT INTO aeropuertos (codigo, descripcion, codigo_pps) VALUES (?, ?, ?)",
+                    [codigo, nombre, codigoPPS]
+                );
+                
+                console.log(`Aeropuerto insertado: ${codigo} - ${nombre} (PPS: ${codigoPPS})`);
+            }
+        }
+        
+        // Crear tabla temporal para relacionar personal con aeropuertos
+        await connection.execute(`
+            CREATE TEMPORARY TABLE temp_aeropuertos (
+                numero_carnet VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci,
+                aeropuerto VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
+        `);
+        
+        // Insertar relaciones personal-aeropuerto
+        const tempData = personalData
+            .map(row => [
+                row.Personal || null,
+                row.Aeropuerto?.trim() || null
+            ])
+            .filter(row => row[0] && row[1]);
+        
+        if (tempData.length > 0) {
+            const insertTempQuery = "INSERT INTO temp_aeropuertos (numero_carnet, aeropuerto) VALUES ?";
+            
+            for (let i = 0; i < tempData.length; i += 1000) {
+                await connection.query(insertTempQuery, [tempData.slice(i, i + 1000)]);
+            }
+        }
+        
+        // Actualizar nompersonal con los códigos de aeropuerto correspondientes
+        await connection.execute(`
+            UPDATE nompersonal np
+            JOIN temp_aeropuertos tp ON CONVERT(np.numero_carnet USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = tp.numero_carnet
+            JOIN aeropuertos a ON CONVERT(tp.aeropuerto USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(a.descripcion USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+            SET np.cod_aer = a.codigo
+        `);
+        
+        // Limpiar tabla temporal
+        await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_aeropuertos');
+        
+        console.log("Migración de aeropuertos completada");
+        
+    } catch (error) {
+        console.error('Error al migrar aeropuertos:', error);
+        throw error;
+    }
 }
 
 async function migrarPuestos(connection, personalData) {
@@ -978,8 +922,178 @@ async function migrarPuestos(connection, personalData) {
     }
 }
 
+// Función para migrar provincias, distritos y corregimientos
+async function migrarUbicaciones(connection, data) {
+    console.log("\n=== Migrando Ubicaciones (Provincias, Distritos, Corregimientos) ===");
+    
+    // Función para normalizar texto (quitar acentos y convertir a lowercase)
+    function normalizeText(text) {
+        if (!text) return null;
+        
+        return text.toString().trim()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase();
+    }
+
+    try {
+        // Verificar si existen las columnas en nompersonal
+        const [checkColumns] = await connection.execute(`
+            SELECT COUNT(*) as count_columns
+            FROM information_schema.COLUMNS 
+            WHERE 
+                TABLE_SCHEMA = DATABASE() AND 
+                TABLE_NAME = 'nompersonal' AND 
+                COLUMN_NAME IN ('dir_provincia', 'dir_distrito', 'dir_corregimiento')
+        `);
+        
+        if (checkColumns[0].count_columns < 3) {
+            const [columnDetails] = await connection.execute(`
+                SELECT COLUMN_NAME 
+                FROM information_schema.COLUMNS 
+                WHERE 
+                    TABLE_SCHEMA = DATABASE() AND 
+                    TABLE_NAME = 'nompersonal' AND 
+                    COLUMN_NAME IN ('dir_provincia', 'dir_distrito', 'dir_corregimiento')
+            `);
+            
+            // Si faltan columnas, crearlas
+            if (!columnDetails.some(c => c.COLUMN_NAME === 'dir_provincia')) {
+                await connection.execute("ALTER TABLE nompersonal ADD COLUMN dir_provincia INT NULL");
+            }
+            if (!columnDetails.some(c => c.COLUMN_NAME === 'dir_distrito')) {
+                await connection.execute("ALTER TABLE nompersonal ADD COLUMN dir_distrito INT NULL");
+            }
+            if (!columnDetails.some(c => c.COLUMN_NAME === 'dir_corregimiento')) {
+                await connection.execute("ALTER TABLE nompersonal ADD COLUMN dir_corregimiento INT NULL");
+            }
+        }
+
+        // Obtener datos de las tablas de referencia
+        const [provincias] = await connection.execute('SELECT id, descripcion FROM provincias');
+        const [distritos] = await connection.execute('SELECT id, descripcion FROM distritos');
+        const [corregimientos] = await connection.execute('SELECT id, descripcion FROM corregimientos');
+        
+        // Crear mapeos normalizados para búsqueda
+        const provinciasMap = new Map();
+        const distritosMap = new Map();
+        const corregimientosMap = new Map();
+        
+        provincias.forEach(p => {
+            const normalizedDesc = normalizeText(p.descripcion);
+            if (normalizedDesc) provinciasMap.set(normalizedDesc, p.id);
+        });
+        
+        distritos.forEach(d => {
+            const normalizedDesc = normalizeText(d.descripcion);
+            if (normalizedDesc) distritosMap.set(normalizedDesc, d.id);
+        });
+        
+        corregimientos.forEach(c => {
+            const normalizedDesc = normalizeText(c.descripcion);
+            if (normalizedDesc) corregimientosMap.set(normalizedDesc, c.id);
+        });
+        
+        // Crear tabla temporal
+        await connection.execute(`DROP TEMPORARY TABLE IF EXISTS temp_ubicaciones`);
+        await connection.execute(`
+            CREATE TEMPORARY TABLE temp_ubicaciones (
+                numero_carnet VARCHAR(50),
+                id_provincia INT,
+                id_distrito INT,
+                id_corregimiento INT
+            )
+        `);
+        
+        // Preparar datos procesados
+        const tempData = data
+            .map(row => {
+                const carnet = row.Personal?.toString().trim() || null;
+                if (!carnet) return null;
+                
+                const provinciaNorm = normalizeText(row.Estado);
+                const distritoNorm = normalizeText(row.Delegacion);
+                const corregimientoNorm = normalizeText(row.Poblacion);
+                
+                const idProvincia = provinciaNorm ? provinciasMap.get(provinciaNorm) || null : null;
+                const idDistrito = distritoNorm ? distritosMap.get(distritoNorm) || null : null;
+                const idCorregimiento = corregimientoNorm ? corregimientosMap.get(corregimientoNorm) || null : null;
+                
+                return [
+                    carnet,
+                    idProvincia,
+                    idDistrito,
+                    idCorregimiento
+                ];
+            })
+            .filter(row => row !== null);
+        
+        // Insertar datos en tabla temporal
+        if (tempData.length > 0) {
+            const insertTempQuery = `
+                INSERT INTO temp_ubicaciones 
+                (numero_carnet, id_provincia, id_distrito, id_corregimiento) 
+                VALUES ?
+            `;
+            
+            for (let i = 0; i < tempData.length; i += 1000) {
+                await connection.query(insertTempQuery, [tempData.slice(i, i + 1000)]);
+            }
+            
+            console.log(`Procesados ${tempData.length} registros de ubicaciones`);
+        }
+        
+        // CORRECCIÓN: Actualizar nompersonal con las ubicaciones encontradas
+        // Primero respaldamos los valores actuales por si acaso
+        await connection.execute(`
+            CREATE TEMPORARY TABLE IF NOT EXISTS backup_ubicaciones AS
+            SELECT personal_id, numero_carnet, dir_provincia, dir_distrito, dir_corregimiento 
+            FROM nompersonal 
+            WHERE numero_carnet IN (SELECT numero_carnet FROM temp_ubicaciones)
+        `);
+        
+        // Ejecutar actualizaciones separadas para cada campo en lugar de una sola actualización
+        // Provincia
+        await connection.execute(`
+            UPDATE nompersonal np
+            JOIN temp_ubicaciones tu ON TRIM(np.numero_carnet) = TRIM(tu.numero_carnet)
+            SET np.dir_provincia = tu.id_provincia
+            WHERE tu.numero_carnet IS NOT NULL AND tu.id_provincia IS NOT NULL
+        `);
+        
+        // Distrito
+        await connection.execute(`
+            UPDATE nompersonal np
+            JOIN temp_ubicaciones tu ON TRIM(np.numero_carnet) = TRIM(tu.numero_carnet)
+            SET np.dir_distrito = tu.id_distrito
+            WHERE tu.numero_carnet IS NOT NULL AND tu.id_distrito IS NOT NULL
+        `);
+        
+        // Corregimiento
+        await connection.execute(`
+            UPDATE nompersonal np
+            JOIN temp_ubicaciones tu ON TRIM(np.numero_carnet) = TRIM(tu.numero_carnet)
+            SET np.dir_corregimiento = tu.id_corregimiento
+            WHERE tu.numero_carnet IS NOT NULL AND tu.id_corregimiento IS NOT NULL
+        `);
+        
+        // Limpiar tablas temporales
+        await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_ubicaciones');
+        await connection.execute('DROP TEMPORARY TABLE IF EXISTS backup_ubicaciones');
+        
+        console.log("Migración de ubicaciones completada");
+        
+    } catch (error) {
+        console.error("Error en migrarUbicaciones:", error);
+        throw error;
+    }
+}
+
+// Modificar la función insertarPersonal para incluir id_pais por defecto
 async function insertarPersonal(connection, data) {
     console.log("\n=== Insertando Personal ===");
+
+    await connection.execute("TRUNCATE nompersonal");
 
     await connection.execute(`
         CREATE TEMPORARY TABLE temp_personal (
@@ -1050,7 +1164,9 @@ async function insertarPersonal(connection, data) {
             zona_economica VARCHAR(50),
             barrio VARCHAR(100),
             calle VARCHAR(100),
-            num_casa VARCHAR(50)
+            num_casa VARCHAR(50),
+            id_pais INT DEFAULT 170,
+            motivo_retiro VARCHAR(100)
         )
     `);
 
@@ -1132,7 +1248,7 @@ async function insertarPersonal(connection, data) {
             usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre, EnfermedadesYAlergias,
             ContactoEmergencia, TelefonoEmergencia, ParentescoEmergencia, DireccionEmergencia,
             ContactoEmergencia2, TelefonoEmergencia2, ParentescoEmergencia2, DireccionEmergencia2,
-            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa
+            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa, id_pais, motivo_retiro
         ) VALUES ?
     `;
 
@@ -1227,12 +1343,14 @@ async function insertarPersonal(connection, data) {
             parentescoContacto2 || null,
             row.DireccionPariente2 || null,
             "Fijo",
-            '0000-00-00',
+            formatExcelDate(row.FechaBaja),  // fecharetiro = FechaBaja
             1,
             1,
             row.Barrio || null,
             row.Calle || null,
-            row.NumCasa || null
+            row.NumCasa || null,
+            170,  // Valor por defecto para id_pais
+            row.ConceptoBaja || null  // Nuevo: motivo_retiro = ConceptoBaja
         ];
     }));
 
@@ -1257,7 +1375,7 @@ async function insertarPersonal(connection, data) {
             usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre, EnfermedadesYAlergias,
             ContactoEmergencia, TelefonoEmergencia, ParentescoEmergencia, DireccionEmergencia,
             ContactoEmergencia2, TelefonoEmergencia2, ParentescoEmergencia2, DireccionEmergencia2,
-            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa
+            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa, id_pais, motivo_retiro
         )
         SELECT * FROM temp_personal tp
         WHERE NOT EXISTS (
@@ -1510,8 +1628,8 @@ async function main() {
             connectTimeout: 60000
         });
 
-        // Leer archivo de personal
-        const workbookPersonal = xlsx.readFile('formatos/Personal_Al_28022025.xlsx');
+        // Leer archivo de personal Personal_al_2025-03-21.xlsx
+        const workbookPersonal = xlsx.readFile('formatos/Personal_al_2025-03-21.xlsx');
         const sheetPersonal = workbookPersonal.Sheets[workbookPersonal.SheetNames[0]];
         const dataPersonal = xlsx.utils.sheet_to_json(sheetPersonal);
 
@@ -1520,6 +1638,17 @@ async function main() {
         const sheetEstructura = workbookEstructura.Sheets[workbookEstructura.SheetNames[0]];
         const dataEstructura = xlsx.utils.sheet_to_json(sheetEstructura);
 
+        // Verificar si existe el archivo de Sucursales
+        const sucursalesPath = 'formatos/Sucursales.xlsx';
+        try {
+            require('fs').accessSync(sucursalesPath, require('fs').constants.R_OK);
+            console.log("Archivo de Sucursales encontrado.");
+        } catch (error) {
+            console.error("ADVERTENCIA: No se encontró el archivo Sucursales.xlsx en la carpeta 'formatos'.");
+            console.error("Por favor, asegúrese de que el archivo existe antes de continuar.");
+            console.error("La migración de aeropuertos usará datos del archivo de personal como alternativa.");
+        }
+
         const progressBar = new cliProgress.SingleBar({
             format: 'Progreso |{bar}| {percentage}% || {value}/{total} Módulos || {currentTask}',
             barCompleteChar: '\u2588',
@@ -1527,7 +1656,7 @@ async function main() {
             hideCursor: true
         });
 
-        const totalTasks = 9; // Incrementado en 1 para incluir las partidas presupuestarias
+        const totalTasks = 10; // Incrementado en 1 para incluir la migración de ubicaciones
         progressBar.start(totalTasks, 0, { currentTask: 'Iniciando...' });
 
         try {
@@ -1558,6 +1687,9 @@ async function main() {
             
             progressBar.update(9, { currentTask: 'Migrando Partidas Presupuestarias...' });
             await migrarPartidasPresupuestarias(connection);
+            
+            progressBar.update(10, { currentTask: 'Migrando Ubicaciones (Provincias, Distritos, Corregimientos)...' });
+            await migrarUbicaciones(connection, dataPersonal);
 
             progressBar.update(totalTasks, { currentTask: 'Completado!' });
         } catch (error) {
