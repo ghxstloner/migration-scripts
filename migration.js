@@ -520,44 +520,188 @@ async function migrarCentroCostos(connection, personalData) {
         const sheetCC = workbookCC.Sheets[workbookCC.SheetNames[0]];
         const centroCostosData = xlsx.utils.sheet_to_json(sheetCC);
 
-        // Conjunto de códigos válidos
+        // Conjunto de códigos válidos y mapas para normalización
         const codigosCentroValidos = new Set();
+        const codigoDescripcionMap = new Map(); // Mapa código -> descripción
+        const descripcionCodigoMap = new Map(); // Mapa descripción -> código
+        
+        // Debug: Mostrar las primeras filas del Excel de centro de costos
+        console.log("Primeras filas de CentroCosto.xlsx:");
+        console.log(centroCostosData.slice(0, 3));
 
         // Insertar los centros de costos
+        console.log("Insertando centros de costo desde el archivo CentroCosto.xlsx");
+        let countInserted = 0;
         for (const row of centroCostosData) {
-            if (!row.Clave || !row.Descripción) continue;
+            if (!row.Clave && !row.Descripción) continue;
 
-            const codCos = row.Clave.toString().trim();
-            const descripcion = row.Descripción.trim();
+            const codCos = row.Clave ? row.Clave.toString().trim() : "";
+            const descripcion = row.Descripción ? row.Descripción.toString().trim() : "";
 
+            // Insertar en la tabla
             await connection.execute(
                 'INSERT INTO centro_costos (cod_cos, des_scos) VALUES (?, ?)',
                 [codCos, descripcion]
             );
             
             codigosCentroValidos.add(codCos);
+            
+            // Mapear código -> descripción y descripción -> código
+            codigoDescripcionMap.set(codCos, descripcion);
+            descripcionCodigoMap.set(descripcion.toUpperCase(), codCos);
+            
+            // Manejar variaciones de código
+            // 1. Sin ceros a la izquierda (0000 -> 0)
+            const simplifiedCode = parseInt(codCos, 10).toString();
+            if (simplifiedCode !== codCos) {
+                codigoDescripcionMap.set(simplifiedCode, descripcion);
+            }
+            
+            // 2. Formato combinado "CÓDIGO DESCRIPCIÓN"
+            const combinedKey = `${codCos} ${descripcion}`.toUpperCase();
+            const simplifiedCombinedKey = `${simplifiedCode} ${descripcion}`.toUpperCase();
+            
+            descripcionCodigoMap.set(combinedKey, codCos);
+            descripcionCodigoMap.set(simplifiedCombinedKey, codCos);
+            
+            countInserted++;
         }
+        console.log(`Se insertaron ${countInserted} centros de costo en la tabla centro_costos`);
 
+        // Imprimir ejemplos de mapeos para debug
+        console.log("Ejemplos de mapeos código -> descripción:");
+        let i = 0;
+        for (const [key, value] of codigoDescripcionMap.entries()) {
+            console.log(`${key} -> ${value}`);
+            if (++i >= 5) break;
+        }
+        
+        console.log("Ejemplos de mapeos descripción -> código:");
+        i = 0;
+        for (const [key, value] of descripcionCodigoMap.entries()) {
+            console.log(`${key} -> ${value}`);
+            if (++i >= 5) break;
+        }
+        
+        // Verificar el caso específico "0 GERENCIA GENERAL"
+        console.log("Verificando mapeo para '0 GERENCIA GENERAL':");
+        const testKey = "0 GERENCIA GENERAL";
+        console.log(`¿Existe mapeo para '${testKey}'? ${descripcionCodigoMap.has(testKey.toUpperCase())}`);
+        
         // Crear tabla temporal
+        await connection.execute(`DROP TEMPORARY TABLE IF EXISTS temp_centro_costos`);
         await connection.execute(`
             CREATE TEMPORARY TABLE temp_centro_costos (
-                numero_carnet VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci,
+                numero_carnet VARCHAR(50),
                 cod_cos VARCHAR(50)
             )
         `);
 
         // Preparar datos
         const tempData = [];
+        let countValid = 0;
+        let countInvalid = 0;
+        let unmappedCenters = new Set();
+        let problematicosCenters = [];
 
         for (const row of personalData) {
-            if (!row.Personal || !row.CentroCostos) continue;
+            if (!row.Personal) continue;
             
             const numeroCarnet = row.Personal.toString().trim();
-            const centroCosto = row.CentroCostos.toString().trim();
             
-            if (codigosCentroValidos.has(centroCosto)) {
-                tempData.push([numeroCarnet, centroCosto]);
+            // Buscar el centro de costos en varias posibles columnas
+            let centroCosto = null;
+            if (row.CentroCostos !== undefined) {
+                centroCosto = row.CentroCostos;
+            } else if (row.CentroCosto !== undefined) {
+                centroCosto = row.CentroCosto;
+            } else if (row["Centro de Costo"] !== undefined) {
+                centroCosto = row["Centro de Costo"];
+            } else if (row.Centro !== undefined) {
+                centroCosto = row.Centro;
             }
+            
+            if (centroCosto === null || centroCosto === undefined) continue;
+            
+            // Convertir a string y limpiar
+            const centroCostoStr = centroCosto.toString().trim();
+            let codCostoFinal = null;
+            
+            // Caso 1: Es directamente un código válido
+            if (codigosCentroValidos.has(centroCostoStr)) {
+                codCostoFinal = centroCostoStr;
+            }
+            // Caso 2: Es un código simplificado (sin ceros a la izquierda)
+            else if (codigoDescripcionMap.has(centroCostoStr)) {
+                // El código está en el mapa de variaciones
+                codCostoFinal = centroCostoStr.padStart(4, '0');
+            }
+            // Caso 3: Es una descripción completa
+            else if (descripcionCodigoMap.has(centroCostoStr.toUpperCase())) {
+                codCostoFinal = descripcionCodigoMap.get(centroCostoStr.toUpperCase());
+            }
+            // Caso 4: Es un formato "CÓDIGO DESCRIPCIÓN" como "0 GERENCIA GENERAL"
+            else {
+                // Intentar extraer un código y una descripción
+                const matches = centroCostoStr.match(/^(\d+)\s+(.+)$/);
+                if (matches) {
+                    const code = matches[1];
+                    const desc = matches[2].trim();
+                    const combinedKey = `${code} ${desc}`.toUpperCase();
+                    
+                    // Buscar por la clave combinada
+                    if (descripcionCodigoMap.has(combinedKey)) {
+                        codCostoFinal = descripcionCodigoMap.get(combinedKey);
+                    }
+                    // Buscar por descripción solamente
+                    else if (descripcionCodigoMap.has(desc.toUpperCase())) {
+                        codCostoFinal = descripcionCodigoMap.get(desc.toUpperCase());
+                    }
+                    // Buscar por descripción en codigoDescripcionMap
+                    else {
+                        // Este es el caso específico de "0 GERENCIA GENERAL"
+                        for (const [codKey, descValue] of codigoDescripcionMap.entries()) {
+                            if (descValue.toUpperCase() === desc.toUpperCase()) {
+                                codCostoFinal = codKey;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Caso especial conocido: "0 GERENCIA GENERAL" = "0000"
+            if (centroCostoStr.toUpperCase() === "0 GERENCIA GENERAL") {
+                codCostoFinal = "0000";
+                console.log(`Asignando código "0000" a centro de costo "${centroCostoStr}" para carnet ${numeroCarnet}`);
+            }
+            
+            if (codCostoFinal) {
+                tempData.push([numeroCarnet, codCostoFinal]);
+                countValid++;
+            } else {
+                countInvalid++;
+                unmappedCenters.add(centroCostoStr);
+                
+                // Guardar detalles para depuración
+                if (problematicosCenters.length < 10) {  // Limitar a 10 ejemplos
+                    problematicosCenters.push({
+                        carnet: numeroCarnet,
+                        centroCosto: centroCostoStr
+                    });
+                }
+            }
+        }
+
+        console.log(`Se encontraron ${countValid} registros con centros de costo válidos y ${countInvalid} inválidos`);
+        
+        // Mostrar los centros que no se pudieron mapear (hasta 10)
+        if (unmappedCenters.size > 0) {
+            console.log("Centros de costo no mapeados (muestra):", 
+                Array.from(unmappedCenters).slice(0, 10));
+            
+            console.log("Ejemplos problemáticos detallados:", 
+                problematicosCenters);
         }
 
         // Insertar en tabla temporal
@@ -567,17 +711,21 @@ async function migrarCentroCostos(connection, personalData) {
             for (let i = 0; i < tempData.length; i += 1000) {
                 await connection.query(insertTempQuery, [tempData.slice(i, i + 1000)]);
             }
+            console.log(`Insertados ${tempData.length} registros en tabla temporal`);
         }
 
+        // Actualizar nompersonal - utilizamos TRIM para evitar problemas con espacios
         const [updateResult] = await connection.execute(`
             UPDATE nompersonal np
-            JOIN temp_centro_costos tp ON TRIM(np.numero_carnet) = tp.numero_carnet
+            JOIN temp_centro_costos tp ON TRIM(np.numero_carnet) = TRIM(tp.numero_carnet)
             SET np.cod_cos = tp.cod_cos
             WHERE tp.cod_cos IS NOT NULL
         `);
+        console.log(`Actualizados ${updateResult.affectedRows} registros en nompersonal`);
 
         // Verificar actualización
         const [countUpdated] = await connection.execute('SELECT COUNT(*) as count FROM nompersonal WHERE cod_cos IS NOT NULL');
+        console.log(`Total de registros de personal con centro de costo asignado: ${countUpdated[0].count}`);
 
         // Limpiar tabla temporal
         await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_centro_costos');
@@ -609,7 +757,6 @@ async function migrarTablasGenerales(connection, data) {
     await connection.execute('SET FOREIGN_KEY_CHECKS=0');
     
     // Primero, manejar los aeropuertos desde un archivo separado
-    await migrarAeropuertos(connection, data);
     
     // Luego continuar con las demás tablas
     for (const tabla of tablas) {
@@ -759,74 +906,107 @@ async function migrarTablasGenerales(connection, data) {
     await connection.execute('SET FOREIGN_KEY_CHECKS=1');
 }
 
-// Nueva función para manejar aeropuertos específicamente
 async function migrarAeropuertos(connection, personalData) {
-    console.log("\n=== Migrando Aeropuertos desde Sucursales.xlsx ===");
-    
     try {
-        // Limpiar tabla existente
-        await connection.execute("TRUNCATE aeropuertos");
+        console.log("\n=== Migrando Aeropuertos ===");
         
-        // Leer el archivo de Sucursales
-        const workbookSucursales = xlsx.readFile('formatos/Sucursales.xlsx');
+        // Desactivar restricciones de clave foránea
+        await connection.execute("SET FOREIGN_KEY_CHECKS=0");
+        
+        // Limpiar la tabla antes de la migración
+        await connection.execute("TRUNCATE aeropuertos");
+
+        // Leer el archivo Sucursales.xlsx
+        const workbookSucursales = xlsx.readFile("formatos/Sucursales.xlsx");
         const sheetSucursales = workbookSucursales.Sheets[workbookSucursales.SheetNames[0]];
         const sucursalesData = xlsx.utils.sheet_to_json(sheetSucursales);
-        
-        // Insertar aeropuertos desde Sucursales.xlsx
+
+        // Mapa de códigos PPS a códigos de aeropuerto
+        const ppsACodigoMap = new Map();
+
+        // Insertar aeropuertos en la base de datos
         for (const row of sucursalesData) {
             if (row.Sucursal !== undefined && row.Nombre) {
-                const codigo = `AER${String(row.Sucursal).padStart(3, '0')}`;
-                const nombre = row.Nombre.trim();
+                const codigo = `AER${String(row.Sucursal).padStart(3, "0")}`;
+                const nombre = row.Nombre.toString().trim();
                 const codigoPPS = row.Sucursal.toString();
-                
+
                 await connection.execute(
                     "INSERT INTO aeropuertos (codigo, descripcion, codigo_pps) VALUES (?, ?, ?)",
                     [codigo, nombre, codigoPPS]
                 );
+
+                // Guardar en el mapa para búsquedas futuras
+                ppsACodigoMap.set(codigoPPS, codigo);
+            }
+        }
+
+        // Antes de actualizar nompersonal, establecer todas las referencias a NULL
+        await connection.execute("UPDATE nompersonal SET cod_aer = NULL");
+
+        // Actualizar nompersonal con los códigos de aeropuerto
+        const batchSize = 1000;
+        let countUpdated = 0;
+        const updateBatch = [];
+        
+        for (const row of personalData) {
+            if (!row.Personal) continue;
+
+            const numeroCarnet = row.Personal.toString().trim();
+            let codigoAeropuerto = null;
+
+            // Si la sucursal es "0", asignar directamente el aeropuerto AIT
+            if (row.Sucursal === 0 || row.Sucursal === "0") {
+                codigoAeropuerto = "AER000";
+            } 
+            // Para otras sucursales, buscar el código correspondiente en el mapa
+            else if (row.Sucursal) {
+                const codigoPPS = row.Sucursal.toString();
+                codigoAeropuerto = ppsACodigoMap.get(codigoPPS);
+            }
+
+            // Si encontramos un código de aeropuerto válido, agregar a batch de actualización
+            if (codigoAeropuerto) {
+                updateBatch.push([codigoAeropuerto, numeroCarnet]);
                 
-                console.log(`Aeropuerto insertado: ${codigo} - ${nombre} (PPS: ${codigoPPS})`);
+                // Si el lote alcanza el tamaño máximo, ejecutar actualización
+                if (updateBatch.length >= batchSize) {
+                    for (const [codigo, carnet] of updateBatch) {
+                        const [result] = await connection.execute(
+                            "UPDATE nompersonal SET cod_aer = ? WHERE numero_carnet = ?",
+                            [codigo, carnet]
+                        );
+                        countUpdated += result.affectedRows;
+                    }
+                    updateBatch.length = 0; // Limpiar el array
+                }
             }
         }
         
-        // Crear tabla temporal para relacionar personal con aeropuertos
-        await connection.execute(`
-            CREATE TEMPORARY TABLE temp_aeropuertos (
-                numero_carnet VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci,
-                aeropuerto VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
-        `);
-        
-        // Insertar relaciones personal-aeropuerto
-        const tempData = personalData
-            .map(row => [
-                row.Personal || null,
-                row.Aeropuerto?.trim() || null
-            ])
-            .filter(row => row[0] && row[1]);
-        
-        if (tempData.length > 0) {
-            const insertTempQuery = "INSERT INTO temp_aeropuertos (numero_carnet, aeropuerto) VALUES ?";
-            
-            for (let i = 0; i < tempData.length; i += 1000) {
-                await connection.query(insertTempQuery, [tempData.slice(i, i + 1000)]);
+        // Procesar cualquier registro restante en el lote
+        if (updateBatch.length > 0) {
+            for (const [codigo, carnet] of updateBatch) {
+                const [result] = await connection.execute(
+                    "UPDATE nompersonal SET cod_aer = ? WHERE numero_carnet = ?",
+                    [codigo, carnet]
+                );
+                countUpdated += result.affectedRows;
             }
         }
         
-        // Actualizar nompersonal con los códigos de aeropuerto correspondientes
-        await connection.execute(`
-            UPDATE nompersonal np
-            JOIN temp_aeropuertos tp ON CONVERT(np.numero_carnet USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = tp.numero_carnet
-            JOIN aeropuertos a ON CONVERT(tp.aeropuerto USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(a.descripcion USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
-            SET np.cod_aer = a.codigo
-        `);
+        // Reactivar restricciones de clave foránea
+        await connection.execute("SET FOREIGN_KEY_CHECKS=1");
         
-        // Limpiar tabla temporal
-        await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_aeropuertos');
-        
-        console.log("Migración de aeropuertos completada");
+        console.log(`Actualización de aeropuertos completada. ${countUpdated} registros actualizados.`);
         
     } catch (error) {
-        console.error('Error al migrar aeropuertos:', error);
+        console.error("Error en la migración de aeropuertos:", error);
+        // Asegurarse de reactivar las restricciones en caso de error
+        try {
+            await connection.execute("SET FOREIGN_KEY_CHECKS=1");
+        } catch (e) {
+            console.error("Error adicional al reactivar restricciones:", e);
+        }
         throw error;
     }
 }
@@ -1166,7 +1346,8 @@ async function insertarPersonal(connection, data) {
             calle VARCHAR(100),
             num_casa VARCHAR(50),
             id_pais INT DEFAULT 170,
-            motivo_retiro VARCHAR(100)
+            motivo_retiro VARCHAR(100),
+            descripcion_pago VARCHAR(100)
         )
     `);
 
@@ -1248,7 +1429,8 @@ async function insertarPersonal(connection, data) {
             usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre, EnfermedadesYAlergias,
             ContactoEmergencia, TelefonoEmergencia, ParentescoEmergencia, DireccionEmergencia,
             ContactoEmergencia2, TelefonoEmergencia2, ParentescoEmergencia2, DireccionEmergencia2,
-            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa, id_pais, motivo_retiro
+            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa, id_pais, motivo_retiro,
+            descripcion_pago
         ) VALUES ?
     `;
 
@@ -1350,7 +1532,8 @@ async function insertarPersonal(connection, data) {
             row.Calle || null,
             row.NumCasa || null,
             170,  // Valor por defecto para id_pais
-            row.ConceptoBaja || null  // Nuevo: motivo_retiro = ConceptoBaja
+            row.ConceptoBaja || null,
+            'BNP - FONDO PLANILAS'
         ];
     }));
 
@@ -1375,7 +1558,8 @@ async function insertarPersonal(connection, data) {
             usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre, EnfermedadesYAlergias,
             ContactoEmergencia, TelefonoEmergencia, ParentescoEmergencia, DireccionEmergencia,
             ContactoEmergencia2, TelefonoEmergencia2, ParentescoEmergencia2, DireccionEmergencia2,
-            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa, id_pais, motivo_retiro
+            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa, id_pais, motivo_retiro,
+            descripcion_pago
         )
         SELECT * FROM temp_personal tp
         WHERE NOT EXISTS (
@@ -1661,35 +1845,37 @@ async function main() {
 
         try {
             // Primero migrar la estructura organizacional
-            progressBar.update(1, { currentTask: 'Migrando Estructura Organizacional...' });
-            await migrarNiveles(connection, dataEstructura);
+            // progressBar.update(1, { currentTask: 'Migrando Estructura Organizacional...' });
+            // await migrarNiveles(connection, dataEstructura);
 
-            progressBar.update(2, { currentTask: 'Insertando Personal...' });
-            await insertarPersonal(connection, dataPersonal);
+            // progressBar.update(2, { currentTask: 'Insertando Personal...' });
+            // await insertarPersonal(connection, dataPersonal);
 
-            progressBar.update(3, { currentTask: 'Migrando Bancos...' });
-            await migrarBancos(connection, dataPersonal);
+            // progressBar.update(3, { currentTask: 'Migrando Bancos...' });
+            // await migrarBancos(connection, dataPersonal);
 
-            progressBar.update(4, { currentTask: 'Migrando Centro de Costos...' });
-            await migrarCentroCostos(connection, dataPersonal);
+            // progressBar.update(4, { currentTask: 'Migrando Centro de Costos...' });
+            // await migrarCentroCostos(connection, dataPersonal);
 
-            progressBar.update(5, { currentTask: 'Migrando Tablas Generales...' });
-            await migrarTablasGenerales(connection, dataPersonal);
+            await migrarAeropuertos(connection, dataPersonal);
 
-            progressBar.update(6, { currentTask: 'Migrando Puestos...' });
-            await migrarPuestos(connection, dataPersonal);
+            // progressBar.update(5, { currentTask: 'Migrando Tablas Generales...' });
+            // await migrarTablasGenerales(connection, dataPersonal);
 
-            progressBar.update(7, { currentTask: 'Migrando Familiares...' });
-            await migrarFamiliares(connection, dataPersonal);
+            // progressBar.update(6, { currentTask: 'Migrando Puestos...' });
+            // await migrarPuestos(connection, dataPersonal);
 
-            progressBar.update(8, { currentTask: 'Actualizando Niveles en Personal...' });
-            await migrarNivelesPersonal(connection, dataPersonal);
+            // progressBar.update(7, { currentTask: 'Migrando Familiares...' });
+            // await migrarFamiliares(connection, dataPersonal);
+
+            // progressBar.update(8, { currentTask: 'Actualizando Niveles en Personal...' });
+            // await migrarNivelesPersonal(connection, dataPersonal);
             
-            progressBar.update(9, { currentTask: 'Migrando Partidas Presupuestarias...' });
-            await migrarPartidasPresupuestarias(connection);
+            // progressBar.update(9, { currentTask: 'Migrando Partidas Presupuestarias...' });
+            // await migrarPartidasPresupuestarias(connection);
             
-            progressBar.update(10, { currentTask: 'Migrando Ubicaciones (Provincias, Distritos, Corregimientos)...' });
-            await migrarUbicaciones(connection, dataPersonal);
+            // progressBar.update(10, { currentTask: 'Migrando Ubicaciones (Provincias, Distritos, Corregimientos)...' });
+            // await migrarUbicaciones(connection, dataPersonal);
 
             progressBar.update(totalTasks, { currentTask: 'Completado!' });
         } catch (error) {
