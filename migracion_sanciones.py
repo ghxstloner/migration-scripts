@@ -54,7 +54,7 @@ def obtener_personal_id_por_ficha(cursor, ficha_str):
         return None
     
     try:
-        query = "SELECT personal_id FROM nompersonal WHERE ficha = %s AND estado != 'De Baja'"
+        query = "SELECT personal_id FROM nompersonal WHERE ficha = %s"
         cursor.execute(query, (ficha_limpia,))
         resultado = cursor.fetchone()
         return resultado[0] if resultado else None
