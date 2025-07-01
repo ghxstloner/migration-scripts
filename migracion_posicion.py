@@ -99,7 +99,7 @@ def procesar_cargo(cursor, row):
         return
 
     des_car = limpiar_valor(row.get('desc_cargo'))
-    sueldo = limpiar_valor(row.get('sueldo1'), 'decimal')
+    sueldo = limpiar_valor(row.get('sueldo_planilla'), 'decimal')
 
     try:
         cursor.execute("SELECT cod_cargo FROM nomcargos WHERE cod_car = %s", (cod_car,))
@@ -125,7 +125,8 @@ def procesar_posicion(cursor, row):
         return
 
     partida_presupuestaria = generar_partida_formateada(row)
-    sueldo_propuesto = limpiar_valor(row.get('sueldo1'), 'decimal')
+    sueldo_propuesto = limpiar_valor(row.get('sueldo_planilla'), 'decimal')
+    
     sueldo_anual = sueldo_propuesto * 12 if sueldo_propuesto else None
     cargo_id = limpiar_valor(row.get('cargo_presupuestario'), 'int')
     descripcion_posicion = limpiar_valor(row.get('desc_cargo'))
