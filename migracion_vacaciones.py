@@ -184,7 +184,7 @@ def generar_periodos_historicos(cursor, empleado_info, dias_pendientes_totales):
             
             insert_query = """INSERT INTO periodos_vacaciones 
                               (cedula, tipo, fini_periodo, ffin_periodo, asignados, saldo
-                               estatus, observacion, fecha_creacion, usuario_creacion, fecha_efectivas, 
+                               estatus, observacion, fecha_creacion, usuario_creacion, fecha_efectivas
                                saldo_anterior, no_resolucion, fecha_resolucion)
                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             
