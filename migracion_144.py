@@ -99,7 +99,7 @@ def acreditar_144_horas(cursor, ficha, tipo_justificacion):
         dias_restante_val = dias_val
         horas_restante_val = horas_val
         minutos_restante_val = minutos_val
-        created_by_val = 'SISTEMA_PYTHON_MIGRACION'
+        created_by_val = 'admin'
         
         insert_query = """INSERT INTO dias_incapacidad (
             ficha, tipo_justificacion, fecha, tiempo, observacion, fecha_vence, 
