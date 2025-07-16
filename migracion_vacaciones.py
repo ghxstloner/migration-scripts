@@ -183,10 +183,10 @@ def generar_periodos_historicos(cursor, empleado_info, dias_pendientes_totales):
             descripcion = f"Saldo histórico migrado ({dias_este_periodo} de {dias_pendientes_totales}) - Período {fecha_inicio_periodo_dt.year}-{fecha_fin_periodo_dt.year}"
             
             insert_query = """INSERT INTO periodos_vacaciones 
-                              (cedula, tipo, fini_periodo, ffin_periodo, asignados, saldo
-                               estatus, observacion, fecha_creacion, usuario_creacion, fecha_efectivas
-                               saldo_anterior, no_resolucion, fecha_resolucion)
-                              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                            (cedula, tipo, fini_periodo, ffin_periodo, asignados, saldo,
+                            estatus, observacion, fecha_creacion, usuario_creacion, fecha_efectivas,
+                            saldo_anterior, no_resolucion, fecha_resolucion)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             
             cursor.execute(insert_query, (
                 cedula, 1, fecha_inicio_str, fecha_fin_str,
