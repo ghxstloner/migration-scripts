@@ -2,84 +2,7 @@ const mysql = require('mysql2/promise');
 const xlsx = require('xlsx');
 const dbConfig = require('./dbconfig');
 const cliProgress = require('cli-progress');
-const { mapParentesco } = require('./parentesco-utils');
 require('dotenv').config();
-
-function formatExcelDate(date) {
-    // Si no hay fecha, retornar null
-    if (!date) return null;
-    
-    // Si es un número (formato Excel), convertir usando la fórmula de fecha de Excel
-    if (typeof date === 'number') {
-        return new Date((date - 25569) * 86400 * 1000).toISOString().split('T')[0];
-    }
-    
-    // Convertir a string para asegurar el tipo correcto
-    const dateStr = String(date).trim();
-    
-    try {
-        // Caso 1: Formato YYYY-MM-DD HH:MM:SS.mmm
-        if (dateStr.match(/^\d{4}-\d{2}-\d{2}(\s|T)/)) {
-            return dateStr.split(/\s|T/)[0];
-        }
-        
-        // Caso 2: Formato DD/MM/YYYY o D/M/YYYY
-        if (dateStr.includes('/')) {
-            const parts = dateStr.split('/');
-            if (parts.length === 3) {
-                // Determinar si es DD/MM/YYYY o MM/DD/YYYY basado en el valor del primer número
-                // Si el primer número es > 12, asumimos que es DD/MM/YYYY
-                let day, month, year;
-                
-                if (parseInt(parts[0]) > 12) {
-                    // Formato DD/MM/YYYY
-                    day = parts[0];
-                    month = parts[1];
-                    year = parts[2];
-                } else {
-                    // Intentar determinar el formato más probable
-                    if (parseInt(parts[1]) > 12) {
-                        // Probablemente DD/MM/YYYY porque el segundo número >12 solo puede ser un día
-                        day = parts[0];
-                        month = parts[1];
-                        year = parts[2];
-                    } else {
-                        // Al no poder determinar con certeza, asumimos DD/MM/YYYY (formato común fuera de EE.UU.)
-                        day = parts[0];
-                        month = parts[1];
-                        year = parts[2];
-                    }
-                }
-                
-                // Asegurar que el año tenga 4 dígitos
-                if (year.length === 2) {
-                    const currentYear = new Date().getFullYear();
-                    const century = Math.floor(currentYear / 100) * 100;
-                    year = parseInt(year) + century;
-                    // Si el año resultante es futuro por más de 80 años, restar 100
-                    if (year > currentYear + 80) {
-                        year -= 100;
-                    }
-                }
-                
-                return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-            }
-        }
-        
-        // Caso 3: Intentar como último recurso con Date.parse()
-        const timestamp = Date.parse(dateStr);
-        if (!isNaN(timestamp)) {
-            return new Date(timestamp).toISOString().split('T')[0];
-        }
-        
-        // Si no se pudo parsear, registrar y retornar null
-        console.log(`No se pudo formatear la fecha: ${dateStr} (tipo: ${typeof date})`);
-        return null;
-    } catch (e) {
-        console.log(`Error al procesar fecha: ${dateStr}`, e);
-        return null;
-    }
-}
 
 function extractNumericValue(str) {
     if (!str) return null;
@@ -87,217 +10,29 @@ function extractNumericValue(str) {
     return matches ? parseInt(matches[0], 10) : null;
 }
 
-async function migrarBancos(connection, data) {
-    console.log("\n=== Migrando Bancos ===");
-    await connection.execute("TRUNCATE nombancos");
-
-    // Mapeo de bancos a rutas
-    const rutasBancos = {
-        'Banco Nacional Panama': '13',
-        'BANISTMO S.A.': '26',
-        'BANCO GENERAL': '71',
-        'GLOBAL BANK': '1151',
-        'BANISI, S.A.': '1614',
-        'CAJA DE AHORROS': '770',
-        'BANCO NACIONAL DE PANAMA': '13',
-        'BANESCO': '1588',
-        'MULTIBANK': '372',
-        'BAC INTERNATIONAL BANK': '1384',
-        'BANCO BAC DE PANAMA, S.A.': '1384',
-        'SCOTIABANK': '424',
-        'BANCO AZTECA': '1504',
-        'SCOTIABANK TRANSFORMaNDOSE': '1504',
-        'ST. GEORGES BANK': '1494',
-        'MMG BANK': '1478',
-        'METROBANK S.A': '1067',
-        'MERCANTIL BANK': '1630',
-        'METROBANK S.A.': '1067'
-    };
-
-    // Normalización de nombres de bancos
-    const normalizarBanco = (nombre) => {
-        if (nombre === 'BANCO NACIONAL DE PANAMA') {
-            return 'Banco Nacional Panama';
-        }
-        return nombre;
-    };
-
-    // Verificar si es un banco válido (no es solo un número)
-    const esBancoValido = (nombre) => {
-        // Verificar que no sea un número como "40006948689"
-        if (!isNaN(nombre) || nombre === '40006948689') {
-            return false;
-        }
-        return true;
-    };
-
-    const insertBancosQuery = "INSERT INTO nombancos (cod_ban, des_ban, ruta) VALUES (?, ?, ?)";
-    let codBan = 1;
-    const bancosInsertados = new Set();
-
-    for (const row of data) {
-        let banco = row.Banco !== undefined ? String(row.Banco).trim() : null;
-        if (banco && esBancoValido(banco)) {
-            // Normalizar el nombre del banco
-            banco = normalizarBanco(banco);
-            
-            if (!bancosInsertados.has(banco)) {
-                // Si no se encuentra una ruta específica, usar '0' como valor por defecto
-                const ruta = rutasBancos[banco] || '0';
-
-                // Registrar bancos sin ruta específica para revisión
-                if (!rutasBancos[banco]) {
-                    console.log(`Advertencia: Banco sin ruta específica: ${banco}`);
-                }
-
-                await connection.execute(insertBancosQuery, [codBan, banco, ruta]);
-                bancosInsertados.add(banco);
-                codBan++;
-            }
-        }
-    }
-
-    await connection.execute(`
-        CREATE TEMPORARY TABLE temp_bancos (
-            numero_carnet VARCHAR(50),
-            banco VARCHAR(191)
-        )
-    `);
-
-    const insertTempQuery = "INSERT INTO temp_bancos (numero_carnet, banco) VALUES ?";
-    const tempData = data
-        .map(row => {
-            const banco = row.Banco !== undefined ? String(row.Banco).trim() : null;
-            if (banco && esBancoValido(banco)) {
-                return [
-                    row.Personal || null,
-                    normalizarBanco(banco)
-                ];
-            }
-            return null;
-        })
-        .filter(row => row !== null && row[0] && row[1]);
-
-    if (tempData.length > 0) {
-        const batchSize = 1000;
-        for (let i = 0; i < tempData.length; i += batchSize) {
-            await connection.query(insertTempQuery, [tempData.slice(i, i + batchSize)]);
-        }
-    }
-
-    const [updateResult] = await connection.execute(`
-        UPDATE nompersonal np
-        JOIN temp_bancos tp ON np.numero_carnet = tp.numero_carnet 
-        JOIN nombancos nb ON tp.banco = nb.des_ban
-        SET np.codbancob = nb.cod_ban
-    `);
+// Función para normalizar texto (manejar acentos)
+function normalizeText(text) {
+    if (!text) return '';
+    return text.toString().trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/ñ/gi, 'n')
+        .replace(/Ñ/gi, 'N')
+        .replace(/[òóôõö]/gi, 'o')
+        .replace(/[àáâãäå]/gi, 'a')
+        .replace(/[èéêë]/gi, 'e')
+        .replace(/[ìíîï]/gi, 'i')
+        .replace(/[ùúûü]/gi, 'u')
+        .toUpperCase();
 }
 
-async function migrarMEF(connection, data) {
-    console.log("\n=== Iniciando Migración MEF ===");
-
-    await connection.beginTransaction();
-
-    try {
-        await connection.execute('SET FOREIGN_KEY_CHECKS=0');
-
-        await connection.execute("DROP TABLE IF EXISTS cargos_mef");
-        await connection.execute("DROP TABLE IF EXISTS codigos_cargo_mef");
-        await connection.execute("DROP TABLE IF EXISTS posiciones_mef");
-
-        await connection.execute(`
-             CREATE TABLE posiciones_mef (
-                 id INT AUTO_INCREMENT PRIMARY KEY,
-                 posicionmef VARCHAR(10) UNIQUE NOT NULL
-             ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
-         `);
-
-        await connection.execute(`
-             CREATE TABLE codigos_cargo_mef (
-                 id INT AUTO_INCREMENT PRIMARY KEY,
-                 codigocargomef VARCHAR(10) UNIQUE NOT NULL
-             ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
-         `);
-
-        await connection.execute(`
-             CREATE TABLE cargos_mef (
-                 id INT AUTO_INCREMENT PRIMARY KEY,
-                 cargo VARCHAR(191) UNIQUE NOT NULL
-             ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
-         `);
-
-        await connection.execute(`DROP TEMPORARY TABLE IF EXISTS temp_mef`);
-        await connection.execute(`
-            CREATE TEMPORARY TABLE temp_mef (
-                numero_carnet VARCHAR(50),
-                posicionmef VARCHAR(10),
-                codigocargomef VARCHAR(10),
-                cargomef VARCHAR(191)
-            ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
-        `);
-
-        const insertTemp = "INSERT INTO temp_mef (numero_carnet, posicionmef, codigocargomef, cargomef) VALUES ?";
-        const tempValues = data
-            .filter(row => row.Personal && row.PosicionMEF && row.CodigoCargoMef && row.CargoMef)
-            .map(row => {
-                const carnet = row.Personal.toString().trim().padEnd(10, ' ');
-                return [
-                    carnet,
-                    row.PosicionMEF.toString().trim(),
-                    row.CodigoCargoMef.toString().trim(),
-                    row.CargoMef.trim()
-                ];
-            });
-
-        if (tempValues.length > 0) {
-            await connection.query(insertTemp, [tempValues]);
-        }
-
-        await connection.execute(`
-            INSERT INTO posiciones_mef (posicionmef)
-            SELECT DISTINCT posicionmef FROM temp_mef
-        `);
-
-        await connection.execute(`
-            INSERT INTO codigos_cargo_mef (codigocargomef)
-            SELECT DISTINCT codigocargomef FROM temp_mef
-        `);
-
-        await connection.execute(`
-            INSERT INTO cargos_mef (cargo)
-            SELECT DISTINCT cargomef FROM temp_mef
-        `);
-
-        const [updateResult] = await connection.execute(`
-            UPDATE nompersonal np
-            INNER JOIN temp_mef t ON TRIM(np.numero_carnet) = TRIM(t.numero_carnet)
-            INNER JOIN posiciones_mef pm ON t.posicionmef = pm.posicionmef
-            INNER JOIN codigos_cargo_mef ccm ON t.codigocargomef = ccm.codigocargomef
-            INNER JOIN cargos_mef cm ON t.cargomef = cm.cargo
-            SET 
-                np.id_posicion_mef = pm.id,
-                np.id_codigo_cargo_mef = ccm.id,
-                np.id_cargo_mef = cm.id
-        `);
-
-        await connection.execute('SET FOREIGN_KEY_CHECKS=1');
-        await connection.commit();
-
-        return updateResult.affectedRows;
-    } catch (error) {
-        await connection.rollback();
-        throw error;
-    }
+function formatPosicionMEF(posicion) {
+    if (!posicion) return '9999';
+    return posicion.toString().padStart(4, '0');
 }
 
-async function migrarNiveles(connection, data) {
-    console.log("\n=== Migrando Niveles ===");
-
-    // Limpiar las tablas
-    await connection.execute('SET FOREIGN_KEY_CHECKS=0');
-    for (let i = 1; i <= 5; i++) {
-        await connection.execute(`TRUNCATE TABLE nomnivel${i}`);
-    }
+async function actualizarEstructuraOrganizacional(connection, dataEstructura) {
+    console.log("\n=== Actualizando Estructura Organizacional (SIN ELIMINAR) ===");
 
     // Función auxiliar para extraer el código y la descripción corta
     function extractCodigoYDescripcion(valor) {
@@ -310,136 +45,160 @@ async function migrarNiveles(connection, data) {
         };
     }
 
-    // Procesar nivel 1 (VP)
-    const nivel1Set = new Set();
-    const nivel1Map = new Map(); // Para almacenar codorg por descripción
-    let counter1 = 1;
+    await connection.execute('SET FOREIGN_KEY_CHECKS=0');
 
-    for (const row of data) {
+    // Obtener registros existentes para cada nivel
+    const [existingNivel1] = await connection.execute('SELECT codorg, descrip FROM nomnivel1');
+    const [existingNivel2] = await connection.execute('SELECT codorg, descrip FROM nomnivel2');
+    const [existingNivel3] = await connection.execute('SELECT codorg, descrip FROM nomnivel3');
+    const [existingNivel4] = await connection.execute('SELECT codorg, descrip FROM nomnivel4');
+    const [existingNivel5] = await connection.execute('SELECT codorg, descrip FROM nomnivel5');
+
+    // Crear mapas de registros existentes
+    const existingNivel1Map = new Map();
+    const existingNivel2Map = new Map();
+    const existingNivel3Map = new Map();
+    const existingNivel4Map = new Map();
+    const existingNivel5Map = new Map();
+
+    existingNivel1.forEach(item => existingNivel1Map.set(item.descrip, item.codorg));
+    existingNivel2.forEach(item => existingNivel2Map.set(item.descrip, item.codorg));
+    existingNivel3.forEach(item => existingNivel3Map.set(item.descrip, item.codorg));
+    existingNivel4.forEach(item => existingNivel4Map.set(item.descrip, item.codorg));
+    existingNivel5.forEach(item => existingNivel5Map.set(item.descrip, item.codorg));
+
+    // Procesar nivel 1 (VP) - Solo insertar nuevos
+    const nivel1Set = new Set();
+    let maxCodorg1 = existingNivel1.length > 0 ? Math.max(...existingNivel1.map(n => n.codorg)) : 0;
+
+    for (const row of dataEstructura) {
         const vp = row.VP?.trim();
-        if (vp && !nivel1Set.has(vp)) {
+        if (vp && !nivel1Set.has(vp) && !existingNivel1Map.has(vp)) {
             nivel1Set.add(vp);
+            maxCodorg1++;
             const { codigo, descripcionCorta } = extractCodigoYDescripcion(vp);
 
             await connection.execute(
                 'INSERT INTO nomnivel1 (codorg, descrip, descripcion_corta) VALUES (?, ?, ?)',
-                [counter1, vp, descripcionCorta]
+                [maxCodorg1, vp, descripcionCorta]
             );
 
-            nivel1Map.set(vp, counter1);
-            counter1++;
+            existingNivel1Map.set(vp, maxCodorg1);
         }
     }
 
-    // Procesar nivel 2 (Departamento)
+    // Procesar nivel 2 (Departamento) - Solo insertar nuevos
     const nivel2Set = new Set();
-    const nivel2Map = new Map();
-    let counter2 = 1;
+    let maxCodorg2 = existingNivel2.length > 0 ? Math.max(...existingNivel2.map(n => n.codorg)) : 0;
 
-    for (const row of data) {
+    for (const row of dataEstructura) {
         const dep = row.Departamento?.trim();
-        if (dep && !nivel2Set.has(dep)) {
+        if (dep && !nivel2Set.has(dep) && !existingNivel2Map.has(dep)) {
             nivel2Set.add(dep);
+            maxCodorg2++;
             const { codigo, descripcionCorta } = extractCodigoYDescripcion(dep);
             const vpParent = row.VP?.trim();
-            const gerencia = vpParent ? nivel1Map.get(vpParent) : null;
+            const gerencia = vpParent ? existingNivel1Map.get(vpParent) : null;
 
             await connection.execute(
                 'INSERT INTO nomnivel2 (codorg, descrip, gerencia, descripcion_corta) VALUES (?, ?, ?, ?)',
-                [counter2, dep, gerencia, descripcionCorta]
+                [maxCodorg2, dep, gerencia, descripcionCorta]
             );
 
-            nivel2Map.set(dep, counter2);
-            counter2++;
+            existingNivel2Map.set(dep, maxCodorg2);
         }
     }
 
-    // Procesar nivel 3 (Sección)
+    // Procesar nivel 3 (Sección) - Solo insertar nuevos
     const nivel3Set = new Set();
-    const nivel3Map = new Map();
-    let counter3 = 1;
+    let maxCodorg3 = existingNivel3.length > 0 ? Math.max(...existingNivel3.map(n => n.codorg)) : 0;
 
-    for (const row of data) {
+    for (const row of dataEstructura) {
         const sec = row.Seccion?.trim();
-        if (sec && !nivel3Set.has(sec)) {
+        if (sec && !nivel3Set.has(sec) && !existingNivel3Map.has(sec)) {
             nivel3Set.add(sec);
+            maxCodorg3++;
             const { codigo, descripcionCorta } = extractCodigoYDescripcion(sec);
             const depParent = row.Departamento?.trim();
-            const gerencia = depParent ? nivel2Map.get(depParent) : null;
+            const gerencia = depParent ? existingNivel2Map.get(depParent) : null;
 
             await connection.execute(
                 'INSERT INTO nomnivel3 (codorg, descrip, gerencia, descripcion_corta) VALUES (?, ?, ?, ?)',
-                [counter3, sec, gerencia, descripcionCorta]
+                [maxCodorg3, sec, gerencia, descripcionCorta]
             );
 
-            nivel3Map.set(sec, counter3);
-            counter3++;
+            existingNivel3Map.set(sec, maxCodorg3);
         }
     }
 
-    // Procesar nivel 4 (Equipo)
+    // Procesar nivel 4 (Equipo) - Solo insertar nuevos
     const nivel4Set = new Set();
-    const nivel4Map = new Map();
-    let counter4 = 1;
+    let maxCodorg4 = existingNivel4.length > 0 ? Math.max(...existingNivel4.map(n => n.codorg)) : 0;
 
-    for (const row of data) {
+    for (const row of dataEstructura) {
         const eq = row.Equipo?.trim();
-        if (eq && !nivel4Set.has(eq)) {
+        if (eq && !nivel4Set.has(eq) && !existingNivel4Map.has(eq)) {
             nivel4Set.add(eq);
+            maxCodorg4++;
             const { codigo, descripcionCorta } = extractCodigoYDescripcion(eq);
             const secParent = row.Seccion?.trim();
-            const gerencia = secParent ? nivel3Map.get(secParent) : null;
+            const gerencia = secParent ? existingNivel3Map.get(secParent) : null;
 
             await connection.execute(
                 'INSERT INTO nomnivel4 (codorg, descrip, gerencia, descripcion_corta) VALUES (?, ?, ?, ?)',
-                [counter4, eq, gerencia, descripcionCorta]
+                [maxCodorg4, eq, gerencia, descripcionCorta]
             );
 
-            nivel4Map.set(eq, counter4);
-            counter4++;
+            existingNivel4Map.set(eq, maxCodorg4);
         }
     }
 
-    // Procesar nivel 5 (Grupo)
+    // Procesar nivel 5 (Grupo) - Solo insertar nuevos
     const nivel5Set = new Set();
-    let counter5 = 1;
+    let maxCodorg5 = existingNivel5.length > 0 ? Math.max(...existingNivel5.map(n => n.codorg)) : 0;
 
-    for (const row of data) {
+    for (const row of dataEstructura) {
         const grp = row.Grupo?.trim();
-        if (grp && !nivel5Set.has(grp)) {
+        if (grp && !nivel5Set.has(grp) && !existingNivel5Map.has(grp)) {
             nivel5Set.add(grp);
+            maxCodorg5++;
             const { codigo, descripcionCorta } = extractCodigoYDescripcion(grp);
             const eqParent = row.Equipo?.trim();
-            const gerencia = eqParent ? nivel4Map.get(eqParent) : null;
+            const gerencia = eqParent ? existingNivel4Map.get(eqParent) : null;
 
             await connection.execute(
                 'INSERT INTO nomnivel5 (codorg, descrip, gerencia) VALUES (?, ?, ?)',
-                [counter5, grp, gerencia]
+                [maxCodorg5, grp, gerencia]
             );
-
-            counter5++;
         }
     }
 
     await connection.execute('SET FOREIGN_KEY_CHECKS=1');
+    
+    console.log(`✅ Estructura organizacional actualizada:`);
+    console.log(`   Nivel 1 - Nuevos insertados: ${nivel1Set.size}`);
+    console.log(`   Nivel 2 - Nuevos insertados: ${nivel2Set.size}`);
+    console.log(`   Nivel 3 - Nuevos insertados: ${nivel3Set.size}`);
+    console.log(`   Nivel 4 - Nuevos insertados: ${nivel4Set.size}`);
+    console.log(`   Nivel 5 - Nuevos insertados: ${nivel5Set.size}`);
 }
 
-async function migrarNivelesPersonal(connection, data) {
+async function actualizarNivelesPersonal(connection, dataPersonal) {
     console.log("\n=== Actualizando Niveles en Personal ===");
 
     await connection.execute('SET FOREIGN_KEY_CHECKS=0');
 
     try {
-        // Crear tabla temporal con colación compatible
+        // Crear tabla temporal con la misma collation que las tablas principales
         await connection.execute(`
             CREATE TEMPORARY TABLE temp_niveles_personal (
-                numero_carnet VARCHAR(50) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci,
-                vp VARCHAR(191) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci,
-                departamento VARCHAR(191) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci,
-                seccion VARCHAR(191) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci,
-                equipo VARCHAR(191) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci,
-                grupo VARCHAR(191) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci
-            ) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci
+                numero_carnet VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                vp VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                departamento VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                seccion VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                equipo VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                grupo VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
         `);
 
         // Insertar datos en la tabla temporal
@@ -449,7 +208,7 @@ async function migrarNivelesPersonal(connection, data) {
             VALUES ?
         `;
 
-        const tempData = data
+        const tempData = dataPersonal
             .map(row => [
                 row.Personal?.toString().trim() || null,
                 row.Vicepresidencia?.toString().trim() || null,
@@ -458,7 +217,7 @@ async function migrarNivelesPersonal(connection, data) {
                 row.Equipo?.toString().trim() || null,
                 row.Grupo?.toString().trim() || null
             ])
-            .filter(row => row[0]); // Solo registros con número de carnet
+            .filter(row => row[0]);
 
         if (tempData.length > 0) {
             for (let i = 0; i < tempData.length; i += 1000) {
@@ -466,1340 +225,257 @@ async function migrarNivelesPersonal(connection, data) {
             }
         }
 
-        // Actualizar nompersonal con los códigos de nivel correspondientes
+        // Actualizar nompersonal - Query simplificado sin CONVERT
         const updateQuery = `
             UPDATE nompersonal np
             LEFT JOIN temp_niveles_personal tnp 
-                ON CONVERT(np.numero_carnet USING utf8mb3) = tnp.numero_carnet
+                ON TRIM(np.numero_carnet) = TRIM(tnp.numero_carnet)
             LEFT JOIN nomnivel1 n1 
-                ON CONVERT(tnp.vp USING utf8mb3) = CONVERT(n1.descrip USING utf8mb3)
+                ON tnp.vp = n1.descrip
             LEFT JOIN nomnivel2 n2 
-                ON CONVERT(tnp.departamento USING utf8mb3) = CONVERT(n2.descrip USING utf8mb3)
+                ON tnp.departamento = n2.descrip
             LEFT JOIN nomnivel3 n3 
-                ON CONVERT(tnp.seccion USING utf8mb3) = CONVERT(n3.descrip USING utf8mb3)
+                ON tnp.seccion = n3.descrip
             LEFT JOIN nomnivel4 n4 
-                ON CONVERT(tnp.equipo USING utf8mb3) = CONVERT(n4.descrip USING utf8mb3)
+                ON tnp.equipo = n4.descrip
             LEFT JOIN nomnivel5 n5 
-                ON CONVERT(tnp.grupo USING utf8mb3) = CONVERT(n5.descrip USING utf8mb3)
+                ON tnp.grupo = n5.descrip
             SET 
                 np.codnivel1 = n1.codorg,
                 np.codnivel2 = n2.codorg,
                 np.codnivel3 = n3.codorg,
                 np.codnivel4 = n4.codorg,
                 np.codnivel5 = n5.codorg
-            WHERE CONVERT(np.numero_carnet USING utf8mb3) = tnp.numero_carnet
+            WHERE tnp.numero_carnet IS NOT NULL
         `;
 
         const [result] = await connection.execute(updateQuery);
-        console.log(`Registros actualizados: ${result.affectedRows}`);
+        console.log(`✅ Niveles actualizados: ${result.affectedRows} registros`);
 
-        // Limpiar tabla temporal
         await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_niveles_personal');
 
     } catch (error) {
-        console.error('Error en migrarNivelesPersonal:', error);
+        console.error('Error en actualizarNivelesPersonal:', error);
         throw error;
     } finally {
         await connection.execute('SET FOREIGN_KEY_CHECKS=1');
     }
 }
 
-async function migrarCentroCostos(connection, personalData) {
-    console.log("\n=== Migrando Centro de Costos ===");
+async function actualizarPuestos(connection, personalData) {
+    console.log("\n=== Actualizando Puestos en nomfuncion ===");
 
     try {
-        // Desactivar restricciones
-        await connection.execute('SET FOREIGN_KEY_CHECKS=0');
+        // Obtener puestos existentes
+        const [existingPuestos] = await connection.execute(
+            'SELECT nomfuncion_id, descripcion_funcion FROM nomfuncion ORDER BY nomfuncion_id'
+        );
         
-        // Truncar tabla y limpiar valores existentes
-        await connection.execute('TRUNCATE TABLE centro_costos');
-        await connection.execute('UPDATE nompersonal SET cod_cos = NULL');
-
-        // Leer centro de costos
-        const workbookCC = xlsx.readFile('formatos/CentroCosto.xlsx');
-        const sheetCC = workbookCC.Sheets[workbookCC.SheetNames[0]];
-        const centroCostosData = xlsx.utils.sheet_to_json(sheetCC);
-
-        // Conjunto de códigos válidos y mapas para normalización
-        const codigosCentroValidos = new Set();
-        const codigoDescripcionMap = new Map(); // Mapa código -> descripción
-        const descripcionCodigoMap = new Map(); // Mapa descripción -> código
+        // Crear mapa de puestos existentes (normalizado)
+        const existingMap = new Map();
+        const duplicatesMap = new Map();
         
-        // Debug: Mostrar las primeras filas del Excel de centro de costos
-        console.log("Primeras filas de CentroCosto.xlsx:");
-        console.log(centroCostosData.slice(0, 3));
+        existingPuestos.forEach(p => {
+            const normalized = normalizeText(p.descripcion_funcion);
+            if (!duplicatesMap.has(normalized)) {
+                duplicatesMap.set(normalized, []);
+            }
+            duplicatesMap.get(normalized).push({
+                id: p.nomfuncion_id,
+                original: p.descripcion_funcion
+            });
+        });
+        
+        // Usar el ID más antiguo para cada puesto normalizado
+        duplicatesMap.forEach((variants, normalized) => {
+            const oldest = variants.reduce((min, current) => 
+                parseInt(current.id) < parseInt(min.id) ? current : min
+            );
+            existingMap.set(normalized, oldest);
+        });
 
-        // Insertar los centros de costos
-        console.log("Insertando centros de costo desde el archivo CentroCosto.xlsx");
-        let countInserted = 0;
-        for (const row of centroCostosData) {
-            if (!row.Clave && !row.Descripción) continue;
+        // Recopilar puestos únicos del personal
+        const puestosDelPersonal = new Set();
+        personalData.forEach(row => {
+            const puesto = row.Puesto?.toString().trim();
+            if (puesto) {
+                puestosDelPersonal.add(puesto.toUpperCase());
+            }
+        });
 
-            const codCos = row.Clave ? row.Clave.toString().trim() : "";
-            const descripcion = row.Descripción ? row.Descripción.toString().trim() : "";
+        // Insertar nuevos puestos
+        const puestosParaInsertar = [];
+        for (const puesto of puestosDelPersonal) {
+            const puestoNormalizado = normalizeText(puesto);
+            if (!existingMap.has(puestoNormalizado)) {
+                puestosParaInsertar.push([puesto]);
+            }
+        }
 
-            // Insertar en la tabla
-            await connection.execute(
-                'INSERT INTO centro_costos (cod_cos, des_scos) VALUES (?, ?)',
-                [codCos, descripcion]
+        if (puestosParaInsertar.length > 0) {
+            console.log(`💾 Insertando ${puestosParaInsertar.length} nuevos puestos`);
+            
+            const insertQuery = 'INSERT INTO nomfuncion (descripcion_funcion) VALUES ?';
+            const batchSize = 1000;
+            
+            for (let i = 0; i < puestosParaInsertar.length; i += batchSize) {
+                const batch = puestosParaInsertar.slice(i, i + batchSize);
+                await connection.query(insertQuery, [batch]);
+            }
+        } else {
+            console.log("✅ No hay nuevos puestos para insertar");
+        }
+
+        console.log("✅ Puestos actualizados");
+
+    } catch (error) {
+        console.error('Error en actualizarPuestos:', error);
+        throw error;
+    }
+}
+
+async function actualizarCamposEspecificos(connection, dataPersonal) {
+    console.log("\n=== Actualizando Campos Específicos ===");
+
+    try {
+        // Mapear nomfuncion_id
+        async function mapNomfuncionId(puesto) {
+            if (!puesto) return null;
+            
+            const puestoNormalizado = normalizeText(puesto);
+            
+            const [allFunctions] = await connection.execute(
+                'SELECT nomfuncion_id, descripcion_funcion FROM nomfuncion'
             );
             
-            codigosCentroValidos.add(codCos);
-            
-            // Mapear código -> descripción y descripción -> código
-            codigoDescripcionMap.set(codCos, descripcion);
-            descripcionCodigoMap.set(descripcion.toUpperCase(), codCos);
-            
-            // Manejar variaciones de código
-            // 1. Sin ceros a la izquierda (0000 -> 0)
-            const simplifiedCode = parseInt(codCos, 10).toString();
-            if (simplifiedCode !== codCos) {
-                codigoDescripcionMap.set(simplifiedCode, descripcion);
+            // Coincidencia exacta primero
+            for (const func of allFunctions) {
+                if (func.descripcion_funcion === puesto.toUpperCase()) {
+                    return parseInt(func.nomfuncion_id) || null;
+                }
             }
             
-            // 2. Formato combinado "CÓDIGO DESCRIPCIÓN"
-            const combinedKey = `${codCos} ${descripcion}`.toUpperCase();
-            const simplifiedCombinedKey = `${simplifiedCode} ${descripcion}`.toUpperCase();
+            // Coincidencia normalizada
+            for (const func of allFunctions) {
+                const funcNormalizada = normalizeText(func.descripcion_funcion);
+                if (funcNormalizada === puestoNormalizado) {
+                    return parseInt(func.nomfuncion_id) || null;
+                }
+            }
             
-            descripcionCodigoMap.set(combinedKey, codCos);
-            descripcionCodigoMap.set(simplifiedCombinedKey, codCos);
-            
-            countInserted++;
+            return null;
         }
-        console.log(`Se insertaron ${countInserted} centros de costo en la tabla centro_costos`);
 
-        // Imprimir ejemplos de mapeos para debug
-        console.log("Ejemplos de mapeos código -> descripción:");
-        let i = 0;
-        for (const [key, value] of codigoDescripcionMap.entries()) {
-            console.log(`${key} -> ${value}`);
-            if (++i >= 5) break;
-        }
-        
-        console.log("Ejemplos de mapeos descripción -> código:");
-        i = 0;
-        for (const [key, value] of descripcionCodigoMap.entries()) {
-            console.log(`${key} -> ${value}`);
-            if (++i >= 5) break;
-        }
-        
-        // Verificar el caso específico "0 GERENCIA GENERAL"
-        console.log("Verificando mapeo para '0 GERENCIA GENERAL':");
-        const testKey = "0 GERENCIA GENERAL";
-        console.log(`¿Existe mapeo para '${testKey}'? ${descripcionCodigoMap.has(testKey.toUpperCase())}`);
-        
-        // Crear tabla temporal
-        await connection.execute(`DROP TEMPORARY TABLE IF EXISTS temp_centro_costos`);
+        // Crear tabla temporal con collation correcta
         await connection.execute(`
-            CREATE TEMPORARY TABLE temp_centro_costos (
-                numero_carnet VARCHAR(50),
-                cod_cos VARCHAR(50)
-            )
+            CREATE TEMPORARY TABLE temp_actualizacion_campos (
+                numero_carnet VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                suesal DECIMAL(10,2),
+                sueldopro DECIMAL(10,2),
+                salario_diario DECIMAL(10,2),
+                rata_x_hr DECIMAL(10,2),
+                gastos_representacion DECIMAL(10,2),
+                gasto_rep_diario DECIMAL(10,2),
+                rata_hora_gasto_rep DECIMAL(10,2),
+                cuentacob VARCHAR(50),
+                forcob VARCHAR(50),
+                nomposicion_id VARCHAR(4),
+                nomfuncion_id INT,
+                marca_reloj TINYINT DEFAULT 1,
+                PRIMARY KEY (numero_carnet)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
         `);
 
         // Preparar datos
-        const tempData = [];
-        let countValid = 0;
-        let countInvalid = 0;
-        let unmappedCenters = new Set();
-        let problematicosCenters = [];
+        console.log("🔄 Procesando datos...");
+        const tempData = await Promise.all(dataPersonal.map(async row => {
+            const numeroCarnet = row.Personal?.toString().trim();
+            if (!numeroCarnet) return null;
 
-        for (const row of personalData) {
-            if (!row.Personal) continue;
+            const sueldoMensual = parseFloat(row.SueldoMensual) || 0;
+            const sueldoDiario = parseFloat(row.SueldoDiario) || 0;
+            const rataHora = parseFloat(row.RataHora) || 0;
+            const gastoRep = parseFloat(row.GR) || 0;
+            const gastoRepDiario = parseFloat(row.GastoRepresentacionDiario) || 0;
+            const rataHoraGR = parseFloat(row.RataHoraGR) || 0;
             
-            const numeroCarnet = row.Personal.toString().trim();
-            
-            // Buscar el centro de costos en varias posibles columnas
-            let centroCosto = null;
-            if (row.CentroCostos !== undefined) {
-                centroCosto = row.CentroCostos;
-            } else if (row.CentroCosto !== undefined) {
-                centroCosto = row.CentroCosto;
-            } else if (row["Centro de Costo"] !== undefined) {
-                centroCosto = row["Centro de Costo"];
-            } else if (row.Centro !== undefined) {
-                centroCosto = row.Centro;
-            }
-            
-            if (centroCosto === null || centroCosto === undefined) continue;
-            
-            // Convertir a string y limpiar
-            const centroCostoStr = centroCosto.toString().trim();
-            let codCostoFinal = null;
-            
-            // Caso 1: Es directamente un código válido
-            if (codigosCentroValidos.has(centroCostoStr)) {
-                codCostoFinal = centroCostoStr;
-            }
-            // Caso 2: Es un código simplificado (sin ceros a la izquierda)
-            else if (codigoDescripcionMap.has(centroCostoStr)) {
-                // El código está en el mapa de variaciones
-                codCostoFinal = centroCostoStr.padStart(4, '0');
-            }
-            // Caso 3: Es una descripción completa
-            else if (descripcionCodigoMap.has(centroCostoStr.toUpperCase())) {
-                codCostoFinal = descripcionCodigoMap.get(centroCostoStr.toUpperCase());
-            }
-            // Caso 4: Es un formato "CÓDIGO DESCRIPCIÓN" como "0 GERENCIA GENERAL"
-            else {
-                // Intentar extraer un código y una descripción
-                const matches = centroCostoStr.match(/^(\d+)\s+(.+)$/);
-                if (matches) {
-                    const code = matches[1];
-                    const desc = matches[2].trim();
-                    const combinedKey = `${code} ${desc}`.toUpperCase();
-                    
-                    // Buscar por la clave combinada
-                    if (descripcionCodigoMap.has(combinedKey)) {
-                        codCostoFinal = descripcionCodigoMap.get(combinedKey);
-                    }
-                    // Buscar por descripción solamente
-                    else if (descripcionCodigoMap.has(desc.toUpperCase())) {
-                        codCostoFinal = descripcionCodigoMap.get(desc.toUpperCase());
-                    }
-                    // Buscar por descripción en codigoDescripcionMap
-                    else {
-                        // Este es el caso específico de "0 GERENCIA GENERAL"
-                        for (const [codKey, descValue] of codigoDescripcionMap.entries()) {
-                            if (descValue.toUpperCase() === desc.toUpperCase()) {
-                                codCostoFinal = codKey;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Caso especial conocido: "0 GERENCIA GENERAL" = "0000"
-            if (centroCostoStr.toUpperCase() === "0 GERENCIA GENERAL") {
-                codCostoFinal = "0000";
-                console.log(`Asignando código "0000" a centro de costo "${centroCostoStr}" para carnet ${numeroCarnet}`);
-            }
-            
-            if (codCostoFinal) {
-                tempData.push([numeroCarnet, codCostoFinal]);
-                countValid++;
-            } else {
-                countInvalid++;
-                unmappedCenters.add(centroCostoStr);
-                
-                // Guardar detalles para depuración
-                if (problematicosCenters.length < 10) {  // Limitar a 10 ejemplos
-                    problematicosCenters.push({
-                        carnet: numeroCarnet,
-                        centroCosto: centroCostoStr
-                    });
-                }
-            }
-        }
+            const funcionId = await mapNomfuncionId(row.Puesto);
 
-        console.log(`Se encontraron ${countValid} registros con centros de costo válidos y ${countInvalid} inválidos`);
-        
-        // Mostrar los centros que no se pudieron mapear (hasta 10)
-        if (unmappedCenters.size > 0) {
-            console.log("Centros de costo no mapeados (muestra):", 
-                Array.from(unmappedCenters).slice(0, 10));
-            
-            console.log("Ejemplos problemáticos detallados:", 
-                problematicosCenters);
-        }
+            return [
+                numeroCarnet,
+                sueldoMensual,              // suesal
+                sueldoMensual,              // sueldopro
+                sueldoDiario,               // salario_diario
+                rataHora,                   // rata_x_hr
+                gastoRep,                   // gastos_representacion
+                gastoRepDiario,             // gasto_rep_diario
+                rataHoraGR,                 // rata_hora_gasto_rep
+                row.PersonalCuenta || null, // cuentacob
+                row.FormaPago || null,      // forcob
+                formatPosicionMEF(row.PosicionMEF), // nomposicion_id
+                funcionId,                  // nomfuncion_id
+                1                           // marca_reloj
+            ];
+        }));
+
+        const filteredData = tempData.filter(row => row !== null);
 
         // Insertar en tabla temporal
-        if (tempData.length > 0) {
-            const insertTempQuery = "INSERT INTO temp_centro_costos (numero_carnet, cod_cos) VALUES ?";
-            
-            for (let i = 0; i < tempData.length; i += 1000) {
-                await connection.query(insertTempQuery, [tempData.slice(i, i + 1000)]);
-            }
-            console.log(`Insertados ${tempData.length} registros en tabla temporal`);
+        console.log(`💾 Insertando ${filteredData.length} registros en tabla temporal...`);
+        const batchSize = 1000;
+        for (let i = 0; i < filteredData.length; i += batchSize) {
+            const batch = filteredData.slice(i, i + batchSize);
+            await connection.query(`
+                INSERT INTO temp_actualizacion_campos (
+                    numero_carnet, suesal, sueldopro, salario_diario, rata_x_hr,
+                    gastos_representacion, gasto_rep_diario, rata_hora_gasto_rep,
+                    cuentacob, forcob, nomposicion_id, nomfuncion_id, marca_reloj
+                ) VALUES ?
+            `, [batch]);
         }
 
-        // Actualizar nompersonal - utilizamos TRIM para evitar problemas con espacios
+        // Actualizar nompersonal - Sin CONVERT
+        console.log("🔄 Actualizando nompersonal...");
         const [updateResult] = await connection.execute(`
             UPDATE nompersonal np
-            JOIN temp_centro_costos tp ON TRIM(np.numero_carnet) = TRIM(tp.numero_carnet)
-            SET np.cod_cos = tp.cod_cos
-            WHERE tp.cod_cos IS NOT NULL
+            JOIN temp_actualizacion_campos tac ON TRIM(np.numero_carnet) = TRIM(tac.numero_carnet)
+            SET 
+                np.suesal = tac.suesal,
+                np.sueldopro = tac.sueldopro,
+                np.salario_diario = tac.salario_diario,
+                np.rata_x_hr = tac.rata_x_hr,
+                np.gastos_representacion = tac.gastos_representacion,
+                np.gasto_rep_diario = tac.gasto_rep_diario,
+                np.rata_hora_gasto_rep = tac.rata_hora_gasto_rep,
+                np.cuentacob = tac.cuentacob,
+                np.forcob = tac.forcob,
+                np.nomposicion_id = tac.nomposicion_id,
+                np.nomfuncion_id = tac.nomfuncion_id,
+                np.marca_reloj = tac.marca_reloj
         `);
-        console.log(`Actualizados ${updateResult.affectedRows} registros en nompersonal`);
 
-        // Verificar actualización
-        const [countUpdated] = await connection.execute('SELECT COUNT(*) as count FROM nompersonal WHERE cod_cos IS NOT NULL');
-        console.log(`Total de registros de personal con centro de costo asignado: ${countUpdated[0].count}`);
+        console.log(`✅ Personal actualizado: ${updateResult.affectedRows} registros`);
+
+        // Verificaciones
+        const [verificacion] = await connection.execute(`
+            SELECT 
+                COUNT(*) as total_actualizados,
+                COUNT(np.nomfuncion_id) as con_funcion,
+                COUNT(CASE WHEN np.marca_reloj = 1 THEN 1 END) as con_marca_reloj
+            FROM nompersonal np
+            JOIN temp_actualizacion_campos tac ON TRIM(np.numero_carnet) = TRIM(tac.numero_carnet)
+        `);
+        
+        console.log(`📊 Verificación:`);
+        console.log(`   Total actualizados: ${verificacion[0].total_actualizados}`);
+        console.log(`   Con nomfuncion_id: ${verificacion[0].con_funcion}`);
+        console.log(`   Con marca_reloj = 1: ${verificacion[0].con_marca_reloj}`);
 
         // Limpiar tabla temporal
-        await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_centro_costos');
-        
-        // Reactivar restricciones
-        await connection.execute('SET FOREIGN_KEY_CHECKS=1');
-        
-        return updateResult.affectedRows;
+        await connection.execute('DROP TEMPORARY TABLE temp_actualizacion_campos');
+
     } catch (error) {
-        console.error('Error en migrarCentroCostos:', error);
-        await connection.execute('SET FOREIGN_KEY_CHECKS=1');
-        throw error;
-    }
-}
-
-async function migrarTablasGenerales(connection, data) {
-    console.log("\n=== Migrando Tablas Generales ===");
- 
-    const tablas = [
-        // Quitamos aeropuertos de la lista original
-        { nombre: 'dias_periodo', campo: 'DiasPeriodo', codigo: 'cod_dia', descripcion: 'des_dia' },
-        { nombre: 'tipos_periodo', campo: 'PeriodoTipo', codigo: 'cod_tip', descripcion: 'des_tip' },
-        { nombre: 'jornadas', campo: 'Jornada', codigo: 'cod_jor', descripcion: 'des_jor' },
-        { nombre: 'tipos_sueldo', campo: 'TipoSueldo', codigo: 'cod_sue', descripcion: 'des_sue' },
-        { nombre: 'sindicatos', campo: 'Sindicato', codigo: 'cod_sin', descripcion: 'des_sin' },
-        { nombre: 'nivelacademico', campo: 'NivelAcademico', codigo: 'id', descripcion: 'descripcion' }
-    ];
- 
-    await connection.execute('SET FOREIGN_KEY_CHECKS=0');
-    
-    // Primero, manejar los aeropuertos desde un archivo separado
-    
-    // Luego continuar con las demás tablas
-    for (const tabla of tablas) {
-        await connection.execute(`TRUNCATE ${tabla.nombre}`);
- 
-        let codigo = 1;
-        const valoresInsertados = new Set();
- 
-        if (tabla.nombre === 'jornadas') {
-            // Leer el archivo de jornadas
-            const workbookJornadas = xlsx.readFile('formatos/JornadaLaboral.xlsx');
-            const sheetJornadas = workbookJornadas.Sheets[workbookJornadas.SheetNames[0]];
-            const jornadasData = xlsx.utils.sheet_to_json(sheetJornadas);
-
-            // Luego las jornadas del Excel
-            for (const row of jornadasData) {
-                if (row.Jornada && !valoresInsertados.has(row.Jornada)) {
-                    const codFormatted = `J${String(codigo).padStart(3, '0')}`;
-                    
-                    // Convertir factorAusentismo de formato español a decimal
-                    const factorAusentismo = row.FactorAusentismo ? 
-                        parseFloat(row.FactorAusentismo.toString().replace(',', '.')) : 
-                        null;
-
-                    await connection.execute(
-                        `INSERT INTO ${tabla.nombre} (
-                            ${tabla.codigo}, 
-                            ${tabla.descripcion},
-                            tipo,
-                            domingo,
-                            lunes,
-                            martes,
-                            miercoles,
-                            jueves,
-                            viernes,
-                            sabado,
-                            descanso_rompe_rutina,
-                            descansa_festivos,
-                            festivo_rompe_rutina,
-                            horas_promedio,
-                            factor_ausentismo,
-                            logico1,
-                            logico2,
-                            logico3,
-                            logico4,
-                            logico5,
-                            horas_semana,
-                            es_rotativo,
-                            jornada_reducida,
-                            horas_comida,
-                            es_comida_nocturna,
-                            jornada_nocturna,
-                            tipo_jornada,
-                            minutos
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [
-                            codFormatted,
-                            row.Jornada,
-                            row.Tipo || null,
-                            row.Domingo || null,
-                            row.Lunes || null,
-                            row.Martes || null,
-                            row.Miercoles || null,
-                            row.Jueves || null,
-                            row.Viernes || null,
-                            row.Sabado || null,
-                            row.DescansoRompeRutina || null,
-                            row.DescansaFestivos || null,
-                            row.FestivoRompeRutina || null,
-                            row.HorasPromedio || null,
-                            factorAusentismo,
-                            row.Logico1 || null,
-                            row.Logico2 || null,
-                            row.Logico3 || null,
-                            row.Logico4 || null,
-                            row.Logico5 || null,
-                            row.HorasSemana || null,
-                            row.EsRotativo || null,
-                            row.JornadaReducida || null,
-                            row.HorasComida || null,
-                            row.EsComidaNocturna || null,
-                            row.JornadaNocturna || null,
-                            row.TipoJornada || null,
-                            row.Minutos || null
-                        ]
-                    );
-                    valoresInsertados.add(row.Jornada);
-                    codigo++;
-                }
-            }
-        } else {
-            // Procesamiento normal para otras tablas
-            for (const row of data) {
-                const valor = row[tabla.campo]?.trim();
-                if (valor && !valoresInsertados.has(valor)) {
-                    const codPrefijo = tabla.prefijo || tabla.nombre.charAt(0).toUpperCase();
-                    const codFormatted = `${codPrefijo}${String(codigo).padStart(3, '0')}`;
-     
-                    await connection.execute(
-                        `INSERT INTO ${tabla.nombre} (${tabla.codigo}, ${tabla.descripcion}) VALUES (?, ?)`,
-                        [codFormatted, valor]
-                    );
-     
-                    valoresInsertados.add(valor);
-                    codigo++;
-                }
-            }
-        }
- 
-        await connection.execute(`
-            CREATE TEMPORARY TABLE temp_${tabla.nombre} (
-                numero_carnet VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci,
-                valor VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
-        `);
- 
-        const insertTempQuery = `INSERT INTO temp_${tabla.nombre} (numero_carnet, valor) VALUES ?`;
-        const tempData = data
-            .map(row => [
-                row.Personal || null,
-                row[tabla.campo]?.trim() || null
-            ])
-            .filter(row => row[0] && row[1]);
- 
-        if (tempData.length > 0) {
-            for (let i = 0; i < tempData.length; i += 1000) {
-                await connection.query(insertTempQuery, [tempData.slice(i, i + 1000)]);
-            }
-        }
- 
-        const campoUpdate = {
-            'dias_periodo': 'cod_dia',
-            'tipos_periodo': 'cod_tip',
-            'jornadas': 'cod_jor',
-            'tipos_sueldo': 'cod_sue',
-            'nivelacademico': 'cod_niv',
-            'sindicatos': 'cod_sin'
-        }[tabla.nombre];
- 
-        await connection.execute(`
-            UPDATE nompersonal np
-            JOIN temp_${tabla.nombre} tp ON CONVERT(np.numero_carnet USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = tp.numero_carnet
-            JOIN ${tabla.nombre} t ON CONVERT(tp.valor USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(t.${tabla.descripcion} USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
-            SET np.${campoUpdate} = t.${tabla.codigo}
-        `);
-    }
-    await connection.execute('SET FOREIGN_KEY_CHECKS=1');
-}
-
-async function migrarAeropuertos(connection, personalData) {
-    try {
-        console.log("\n=== Migrando Aeropuertos ===");
-        
-        // Desactivar restricciones de clave foránea
-        await connection.execute("SET FOREIGN_KEY_CHECKS=0");
-        
-        // Limpiar la tabla antes de la migración
-        await connection.execute("TRUNCATE aeropuertos");
-
-        // Leer el archivo Sucursales.xlsx
-        const workbookSucursales = xlsx.readFile("formatos/Sucursales.xlsx");
-        const sheetSucursales = workbookSucursales.Sheets[workbookSucursales.SheetNames[0]];
-        const sucursalesData = xlsx.utils.sheet_to_json(sheetSucursales);
-
-        // Mapa de códigos PPS a códigos de aeropuerto
-        const ppsACodigoMap = new Map();
-
-        // Insertar aeropuertos en la base de datos
-        for (const row of sucursalesData) {
-            if (row.Sucursal !== undefined && row.Nombre) {
-                const codigo = `AER${String(row.Sucursal).padStart(3, "0")}`;
-                const nombre = row.Nombre.toString().trim();
-                const codigoPPS = row.Sucursal.toString();
-
-                await connection.execute(
-                    "INSERT INTO aeropuertos (codigo, descripcion, codigo_pps) VALUES (?, ?, ?)",
-                    [codigo, nombre, codigoPPS]
-                );
-
-                // Guardar en el mapa para búsquedas futuras
-                ppsACodigoMap.set(codigoPPS, codigo);
-            }
-        }
-
-        // Antes de actualizar nompersonal, establecer todas las referencias a NULL
-        await connection.execute("UPDATE nompersonal SET cod_aer = NULL");
-
-        // Actualizar nompersonal con los códigos de aeropuerto
-        const batchSize = 1000;
-        let countUpdated = 0;
-        const updateBatch = [];
-        
-        for (const row of personalData) {
-            if (!row.Personal) continue;
-
-            const numeroCarnet = row.Personal.toString().trim();
-            let codigoAeropuerto = null;
-
-            // Si la sucursal es "0", asignar directamente el aeropuerto AIT
-            if (row.Sucursal === 0 || row.Sucursal === "0") {
-                codigoAeropuerto = "AER000";
-            } 
-            // Para otras sucursales, buscar el código correspondiente en el mapa
-            else if (row.Sucursal) {
-                const codigoPPS = row.Sucursal.toString();
-                codigoAeropuerto = ppsACodigoMap.get(codigoPPS);
-            }
-
-            // Si encontramos un código de aeropuerto válido, agregar a batch de actualización
-            if (codigoAeropuerto) {
-                updateBatch.push([codigoAeropuerto, numeroCarnet]);
-                
-                // Si el lote alcanza el tamaño máximo, ejecutar actualización
-                if (updateBatch.length >= batchSize) {
-                    for (const [codigo, carnet] of updateBatch) {
-                        const [result] = await connection.execute(
-                            "UPDATE nompersonal SET cod_aer = ? WHERE numero_carnet = ?",
-                            [codigo, carnet]
-                        );
-                        countUpdated += result.affectedRows;
-                    }
-                    updateBatch.length = 0; // Limpiar el array
-                }
-            }
-        }
-        
-        // Procesar cualquier registro restante en el lote
-        if (updateBatch.length > 0) {
-            for (const [codigo, carnet] of updateBatch) {
-                const [result] = await connection.execute(
-                    "UPDATE nompersonal SET cod_aer = ? WHERE numero_carnet = ?",
-                    [codigo, carnet]
-                );
-                countUpdated += result.affectedRows;
-            }
-        }
-        
-        // Reactivar restricciones de clave foránea
-        await connection.execute("SET FOREIGN_KEY_CHECKS=1");
-        
-        console.log(`Actualización de aeropuertos completada. ${countUpdated} registros actualizados.`);
-        
-    } catch (error) {
-        console.error("Error en la migración de aeropuertos:", error);
-        // Asegurarse de reactivar las restricciones en caso de error
-        try {
-            await connection.execute("SET FOREIGN_KEY_CHECKS=1");
-        } catch (e) {
-            console.error("Error adicional al reactivar restricciones:", e);
-        }
-        throw error;
-    }
-}
-
-async function migrarPuestos(connection, personalData) {
-    console.log("\n=== Migrando Puestos ===");
-
-    await connection.execute('SET FOREIGN_KEY_CHECKS=0');
-
-    try {
-        const [tables] = await connection.execute(
-            "SELECT COUNT(*) as count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'puesto_aitsa'"
-        );
-
-        if (tables[0].count === 0) {
-            await connection.execute(`
-                CREATE TABLE puesto_aitsa (
-                    id INT PRIMARY KEY AUTO_INCREMENT,
-                    puesto VARCHAR(191) UNIQUE
-                )
-            `);
-        }
-
-        const checkColumn = await connection.execute(`
-            SELECT COUNT(*) as exists_count 
-            FROM information_schema.COLUMNS 
-            WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'nompersonal' 
-            AND COLUMN_NAME = 'id_puesto'
-        `);
-
-        if (!checkColumn[0][0].exists_count) {
-            await connection.execute(`
-                ALTER TABLE nompersonal
-                ADD COLUMN id_puesto INT
-            `);
-        }
-
-        const workbookPuestos = xlsx.readFile('formatos/Puestos_Trabajo.xlsx');
-        const sheetPuestos = workbookPuestos.Sheets[workbookPuestos.SheetNames[0]];
-        const puestosData = xlsx.utils.sheet_to_json(sheetPuestos);
-
-        for (const row of puestosData) {
-            const puesto = row.Puesto?.trim();
-            if (puesto) {
-                await connection.execute(
-                    "INSERT IGNORE INTO puesto_aitsa (puesto) VALUES (?)",
-                    [puesto]
-                );
-            }
-        }
-
-        await connection.execute(`
-            CREATE TEMPORARY TABLE temp_puestos (
-                numero_carnet VARCHAR(50),
-                puesto VARCHAR(191)
-            )
-        `);
-
-        const tempData = personalData
-            .map(row => [
-                row.Personal || null,
-                row.Puesto?.trim() || null
-            ])
-            .filter(row => row[0] && row[1]);
-
-        if (tempData.length > 0) {
-            for (let i = 0; i < tempData.length; i += 1000) {
-                await connection.query(
-                    "INSERT INTO temp_puestos (numero_carnet, puesto) VALUES ?",
-                    [tempData.slice(i, i + 1000)]
-                );
-            }
-        }
-
-        await connection.execute(`
-            UPDATE nompersonal np
-            JOIN temp_puestos tp ON np.numero_carnet = tp.numero_carnet
-            JOIN puesto_aitsa pa ON tp.puesto = pa.puesto
-            SET np.id_puesto = pa.id
-        `);
-
-        if (!checkColumn[0][0].exists_count) {
-            await connection.execute(`
-                ALTER TABLE nompersonal
-                ADD CONSTRAINT fk_nompersonal_puesto
-                FOREIGN KEY (id_puesto) REFERENCES puesto_aitsa(id)
-            `);
-        }
-
-    } finally {
-        await connection.execute('SET FOREIGN_KEY_CHECKS=1');
-    }
-}
-
-// Función para migrar provincias, distritos y corregimientos
-async function migrarUbicaciones(connection, data) {
-    console.log("\n=== Migrando Ubicaciones (Provincias, Distritos, Corregimientos) ===");
-    
-    // Función para normalizar texto (quitar acentos y convertir a lowercase)
-    function normalizeText(text) {
-        if (!text) return null;
-        
-        return text.toString().trim()
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .toLowerCase();
-    }
-
-    try {
-        // Verificar si existen las columnas en nompersonal
-        const [checkColumns] = await connection.execute(`
-            SELECT COUNT(*) as count_columns
-            FROM information_schema.COLUMNS 
-            WHERE 
-                TABLE_SCHEMA = DATABASE() AND 
-                TABLE_NAME = 'nompersonal' AND 
-                COLUMN_NAME IN ('dir_provincia', 'dir_distrito', 'dir_corregimiento')
-        `);
-        
-        if (checkColumns[0].count_columns < 3) {
-            const [columnDetails] = await connection.execute(`
-                SELECT COLUMN_NAME 
-                FROM information_schema.COLUMNS 
-                WHERE 
-                    TABLE_SCHEMA = DATABASE() AND 
-                    TABLE_NAME = 'nompersonal' AND 
-                    COLUMN_NAME IN ('dir_provincia', 'dir_distrito', 'dir_corregimiento')
-            `);
-            
-            // Si faltan columnas, crearlas
-            if (!columnDetails.some(c => c.COLUMN_NAME === 'dir_provincia')) {
-                await connection.execute("ALTER TABLE nompersonal ADD COLUMN dir_provincia INT NULL");
-            }
-            if (!columnDetails.some(c => c.COLUMN_NAME === 'dir_distrito')) {
-                await connection.execute("ALTER TABLE nompersonal ADD COLUMN dir_distrito INT NULL");
-            }
-            if (!columnDetails.some(c => c.COLUMN_NAME === 'dir_corregimiento')) {
-                await connection.execute("ALTER TABLE nompersonal ADD COLUMN dir_corregimiento INT NULL");
-            }
-        }
-
-        // Obtener datos de las tablas de referencia
-        const [provincias] = await connection.execute('SELECT id, descripcion FROM provincias');
-        const [distritos] = await connection.execute('SELECT id, descripcion FROM distritos');
-        const [corregimientos] = await connection.execute('SELECT id, descripcion FROM corregimientos');
-        
-        // Crear mapeos normalizados para búsqueda
-        const provinciasMap = new Map();
-        const distritosMap = new Map();
-        const corregimientosMap = new Map();
-        
-        provincias.forEach(p => {
-            const normalizedDesc = normalizeText(p.descripcion);
-            if (normalizedDesc) provinciasMap.set(normalizedDesc, p.id);
-        });
-        
-        distritos.forEach(d => {
-            const normalizedDesc = normalizeText(d.descripcion);
-            if (normalizedDesc) distritosMap.set(normalizedDesc, d.id);
-        });
-        
-        corregimientos.forEach(c => {
-            const normalizedDesc = normalizeText(c.descripcion);
-            if (normalizedDesc) corregimientosMap.set(normalizedDesc, c.id);
-        });
-        
-        // Crear tabla temporal
-        await connection.execute(`DROP TEMPORARY TABLE IF EXISTS temp_ubicaciones`);
-        await connection.execute(`
-            CREATE TEMPORARY TABLE temp_ubicaciones (
-                numero_carnet VARCHAR(50),
-                id_provincia INT,
-                id_distrito INT,
-                id_corregimiento INT
-            )
-        `);
-        
-        // Preparar datos procesados
-        const tempData = data
-            .map(row => {
-                const carnet = row.Personal?.toString().trim() || null;
-                if (!carnet) return null;
-                
-                const provinciaNorm = normalizeText(row.Estado);
-                const distritoNorm = normalizeText(row.Delegacion);
-                const corregimientoNorm = normalizeText(row.Poblacion);
-                
-                const idProvincia = provinciaNorm ? provinciasMap.get(provinciaNorm) || null : null;
-                const idDistrito = distritoNorm ? distritosMap.get(distritoNorm) || null : null;
-                const idCorregimiento = corregimientoNorm ? corregimientosMap.get(corregimientoNorm) || null : null;
-                
-                return [
-                    carnet,
-                    idProvincia,
-                    idDistrito,
-                    idCorregimiento
-                ];
-            })
-            .filter(row => row !== null);
-        
-        // Insertar datos en tabla temporal
-        if (tempData.length > 0) {
-            const insertTempQuery = `
-                INSERT INTO temp_ubicaciones 
-                (numero_carnet, id_provincia, id_distrito, id_corregimiento) 
-                VALUES ?
-            `;
-            
-            for (let i = 0; i < tempData.length; i += 1000) {
-                await connection.query(insertTempQuery, [tempData.slice(i, i + 1000)]);
-            }
-            
-            console.log(`Procesados ${tempData.length} registros de ubicaciones`);
-        }
-        
-        // CORRECCIÓN: Actualizar nompersonal con las ubicaciones encontradas
-        // Primero respaldamos los valores actuales por si acaso
-        await connection.execute(`
-            CREATE TEMPORARY TABLE IF NOT EXISTS backup_ubicaciones AS
-            SELECT personal_id, numero_carnet, dir_provincia, dir_distrito, dir_corregimiento 
-            FROM nompersonal 
-            WHERE numero_carnet IN (SELECT numero_carnet FROM temp_ubicaciones)
-        `);
-        
-        // Ejecutar actualizaciones separadas para cada campo en lugar de una sola actualización
-        // Provincia
-        await connection.execute(`
-            UPDATE nompersonal np
-            JOIN temp_ubicaciones tu ON TRIM(np.numero_carnet) = TRIM(tu.numero_carnet)
-            SET np.dir_provincia = tu.id_provincia
-            WHERE tu.numero_carnet IS NOT NULL AND tu.id_provincia IS NOT NULL
-        `);
-        
-        // Distrito
-        await connection.execute(`
-            UPDATE nompersonal np
-            JOIN temp_ubicaciones tu ON TRIM(np.numero_carnet) = TRIM(tu.numero_carnet)
-            SET np.dir_distrito = tu.id_distrito
-            WHERE tu.numero_carnet IS NOT NULL AND tu.id_distrito IS NOT NULL
-        `);
-        
-        // Corregimiento
-        await connection.execute(`
-            UPDATE nompersonal np
-            JOIN temp_ubicaciones tu ON TRIM(np.numero_carnet) = TRIM(tu.numero_carnet)
-            SET np.dir_corregimiento = tu.id_corregimiento
-            WHERE tu.numero_carnet IS NOT NULL AND tu.id_corregimiento IS NOT NULL
-        `);
-        
-        // Limpiar tablas temporales
-        await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_ubicaciones');
-        await connection.execute('DROP TEMPORARY TABLE IF EXISTS backup_ubicaciones');
-        
-        console.log("Migración de ubicaciones completada");
-        
-    } catch (error) {
-        console.error("Error en migrarUbicaciones:", error);
-        throw error;
-    }
-}
-
-// Modificar la función insertarPersonal para incluir id_pais por defecto
-async function insertarPersonal(connection, data) {
-    console.log("\n=== Insertando Personal ===");
-
-    await connection.execute("TRUNCATE nompersonal");
-
-    await connection.execute(`
-        CREATE TEMPORARY TABLE temp_personal (
-            codigo_carnet VARCHAR(50),
-            numero_carnet VARCHAR(50),
-            ficha INT,
-            estado VARCHAR(20),
-            apellidos VARCHAR(100),
-            apellido_materno VARCHAR(100),
-            nombres VARCHAR(100),
-            sexo VARCHAR(20),
-            nacionalidad INT,
-            fecnac DATE,
-            lugarnac VARCHAR(100),
-            cedula VARCHAR(50),
-            seguro_social VARCHAR(50),
-            estado_civil VARCHAR(20),
-            dv VARCHAR(10),
-            direccion TEXT,
-            direccion2 VARCHAR(191),
-            telefonos VARCHAR(50),
-            TelefonoResidencial VARCHAR(50),
-            TelefonoCelular VARCHAR(50),
-            email VARCHAR(100),
-            fecing DATE,
-            fecha_resolucion_baja DATE,
-            cuenta_pago VARCHAR(50),
-            ISRFijoPeriodo DECIMAL(10,2),
-            suesal DECIMAL(10,2),
-            sueldopro DECIMAL(10,2),
-            salario_diario DECIMAL(10,2),
-            rata_x_hr DECIMAL(10,2),
-            gastos_representacion DECIMAL(10,2),
-            gasto_rep_diario DECIMAL(10,2),
-            rata_hora_gasto_rep DECIMAL(10,2),
-            ConceptoBaja VARCHAR(100),
-            tipnom VARCHAR(3),
-            apenom VARCHAR(200),
-            foto VARCHAR(100),
-            nomposicion_id VARCHAR(4),
-            codcargo VARCHAR(10),
-            forcob VARCHAR(50),
-            cuentacob VARCHAR(50),
-            created_at TIMESTAMP,
-            turno_id INT DEFAULT 1,
-            fin_periodo DATE,
-            tipo_empleado VARCHAR(50) DEFAULT 'Titular',
-            observaciones TEXT,
-            IdDepartamento INT,
-            nomfuncion_id INT,
-            usuario_workflow VARCHAR(50),
-            usr_password VARCHAR(100),
-            proyecto INT,
-            Hijos INT,
-            IdTipoSangre INT,
-            EnfermedadesYAlergias VARCHAR(100),
-            ContactoEmergencia VARCHAR(300),
-            TelefonoEmergencia VARCHAR(100),
-            ParentescoEmergencia INT,
-            DireccionEmergencia VARCHAR(255),
-            ContactoEmergencia2 VARCHAR(300),
-            TelefonoEmergencia2 VARCHAR(100),
-            ParentescoEmergencia2 INT,
-            DireccionEmergencia2 VARCHAR(255),
-            tipemp VARCHAR(50),
-            fecharetiro DATE,
-            tipo_funcionario INT,
-            zona_economica VARCHAR(50),
-            barrio VARCHAR(100),
-            calle VARCHAR(100),
-            num_casa VARCHAR(50),
-            id_pais INT DEFAULT 170,
-            motivo_retiro VARCHAR(100),
-            descripcion_pago VARCHAR(100)
-        )
-    `);
-
-    function extractNumericValue(str) {
-        if (!str) return null;
-        const matches = str.match(/\d+/);
-        return matches ? parseInt(matches[0], 10) : null;
-    }
-
-    function mapEstadoCivil(estado) {
-        if (estado === undefined || estado === null) {
-            return 'Soltero/a';
-        }
-
-        if (typeof estado === 'number') {
-            return estado === 2 ? 'Soltero/a' : 'Soltero/a';
-        }
-
-        if (typeof estado !== 'string') {
-            console.log(`Estado civil tipo inválido: ${typeof estado}, valor: ${estado}`);
-            return 'Soltero/a';
-        }
-
-        const mapping = {
-            '2': 'Soltero/a',
-            'CASADA': 'Casado/a',
-            'CASADO': 'Casado/a',
-            'DIVORCIADA': 'Divorciado/a',
-            'DIVORCIADO': 'Divorciado/a',
-            'SEPARADA': 'Divorciado/a',
-            'SOLTERA': 'Soltero/a',
-            'SOLTERO': 'Soltero/a',
-            'UNIDA': 'Unido',
-            'UNIDO': 'Unido',
-            'UNION LIBRE': 'Unido',
-            'VIUDA': 'Viudo/a',
-            'VIUDO': 'Viudo/a'
-        };
-        return mapping[estado.toUpperCase()] || 'Soltero/a';
-    }
-
-    function mapEstado(estado) {
-        if (!estado) return null;
-
-        const mapping = {
-            'ALTA': 'Activo',
-            'ASPIRANTE': 'Aspirante',
-            'BAJA': 'De Baja'
-        };
-
-        const cleanEstado = estado.toString().trim().toUpperCase();
-        return mapping[cleanEstado] || 'De Baja';
-    }
-
-    function formatPosicionMEF(posicion) {
-        if (!posicion) return '9999';
-        return posicion.toString().padStart(4, '0');
-    }
-
-    async function mapTipoSangre(tipo) {
-        if (!tipo) return null;
-        const [rows] = await connection.execute(
-            'SELECT IdTipoSangre FROM tiposangre WHERE Descripcion = ?',
-            [tipo.toString().trim()]
-        );
-        return rows[0]?.IdTipoSangre || null;
-    }
-
-    const insertTempQuery = `
-        INSERT INTO temp_personal (
-            codigo_carnet, numero_carnet, ficha, estado, apellidos, apellido_materno,
-            nombres, sexo, nacionalidad, fecnac, lugarnac, cedula, seguro_social,
-            estado_civil, dv, direccion, direccion2, telefonos, TelefonoResidencial,
-            TelefonoCelular, email, fecing, fecha_resolucion_baja, cuenta_pago,
-            ISRFijoPeriodo, suesal, sueldopro, salario_diario, rata_x_hr, gastos_representacion,
-            gasto_rep_diario, rata_hora_gasto_rep, ConceptoBaja, tipnom, apenom, foto,
-            nomposicion_id, codcargo, forcob, cuentacob, created_at, turno_id, 
-            fin_periodo, tipo_empleado, observaciones, IdDepartamento, nomfuncion_id,
-            usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre, EnfermedadesYAlergias,
-            ContactoEmergencia, TelefonoEmergencia, ParentescoEmergencia, DireccionEmergencia,
-            ContactoEmergencia2, TelefonoEmergencia2, ParentescoEmergencia2, DireccionEmergencia2,
-            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa, id_pais, motivo_retiro,
-            descripcion_pago
-        ) VALUES ?
-    `;
-
-    const fechaHoy = new Date().toISOString().split('T')[0];
-
-    const tempData = await Promise.all(data.map(async row => {
-        const fichaNum = extractNumericValue(row.Personal);
-        const sueldoMensual = parseFloat(row.SueldoMensual) || 0;
-        const tipnom = {
-            'JUBILADOS': '002',
-            'PERMANENTES': '001',
-            'TRANSITORIOS': '003'
-        }[row.Categoria?.trim()?.toUpperCase()] || null;
-
-        const [departamentoId] = await connection.execute(
-            'SELECT IdDepartamento FROM departamento WHERE Descripcion = ?',
-            [row.Departamento ?? null]
-        );
-
-        const [funcionId] = await connection.execute(
-            'SELECT nomfuncion_id FROM nomfuncion WHERE descripcion_funcion = ?',
-            [row.Puesto ?? null]
-        );
-
-        const apenom = `${row.ApellidoPaterno || ''} ${row.ApellidoMaterno || ''}, ${row.Nombre || ''}`.trim();
-        const foto = row.Cedula ? `fotos/${row.Cedula}.jpeg` : null;
-        const tipoSangreId = await mapTipoSangre(row.TipoSangre);
-        const parentescoContacto1 = await mapParentesco(connection, row.ParentescoContacto1);
-        const parentescoContacto2 = await mapParentesco(connection, row.ParentescoContacto2);
-        const formattedCarnet = (row.Personal || '').toString().trim().padEnd(10, ' ');
-
-        return [
-            formattedCarnet,  // codigo_carnet con padding
-            formattedCarnet,
-            fichaNum,
-            mapEstado(row.Estatus),
-            row.ApellidoPaterno || null,
-            row.ApellidoMaterno || null,
-            row.Nombre || null,
-            row.Sexo || null,
-            row.Nacionalidad === 'Panamena' ? 1 : 2,
-            formatExcelDate(row.FechaNacimiento),
-            row.LugarNacimiento || null,
-            row.Cedula || null,
-            row.SeguroSocial || null,
-            mapEstadoCivil(row.EstadoCivil),
-            row.DV || null,
-            row.Direccion || null,
-            row.Barrio || null,
-            row.Telefono || null,
-            row.Telefono || null,
-            row.Celular || null,
-            row.eMail || null,
-            formatExcelDate(row.FechaAntiguedad),
-            formatExcelDate(row.FechaBaja),
-            row.CtaDinero || null,
-            parseFloat(row.ISRFijoPeriodo) || 0,
-            sueldoMensual,
-            sueldoMensual,
-            parseFloat(row.SueldoDiario) || 0,
-            parseFloat(row.RataHora) || 0,
-            parseFloat(row.GR) || 0,
-            parseFloat(row.GastoRepresentacionDiario) || 0,
-            parseFloat(row.RataHoraGR) || 0,
-            row.ConceptoBaja || null,
-            tipnom,
-            apenom,
-            foto,
-            formatPosicionMEF(row.PosicionMEF),
-            row.CodigoCargoMef || null,
-            row.FormaPago || null,
-            row.PersonalCuenta || null,
-            formatExcelDate(row.FechaAlta),
-            1,
-            formatExcelDate(row.FechaBaja),
-            'Titular',
-            `Migración del Excel ${fechaHoy}`,
-            departamentoId[0]?.IdDepartamento || null,
-            funcionId[0]?.nomfuncion_id || null,
-            row.Cedula || null,
-            'e10adc3949ba59abbe56e057f20f883e',
-            1,
-            row.Hijos || null,
-            tipoSangreId || null,
-            row.Enfermedades || null,
-            row.NombreContacto1 || null,
-            row.CelularContacto1 || null,
-            parentescoContacto1 || null,
-            row.DireccionPariente || null,
-            row.NombreContacto2 || null,
-            row.CelularContacto2 || null,
-            parentescoContacto2 || null,
-            row.DireccionPariente2 || null,
-            "Fijo",
-            formatExcelDate(row.FechaBaja),  // fecharetiro = FechaBaja
-            1,
-            1,
-            row.Barrio || null,
-            row.Calle || null,
-            row.NumCasa || null,
-            170,  // Valor por defecto para id_pais
-            row.ConceptoBaja || null,
-            'BNP - FONDO PLANILAS'
-        ];
-    }));
-
-    const filteredData = tempData.filter(row => row[0]);
-
-    if (filteredData.length > 0) {
-        for (let i = 0; i < filteredData.length; i += 1000) {
-            await connection.query(insertTempQuery, [filteredData.slice(i, i + 1000)]);
-        }
-    }
-
-    await connection.execute(`
-        INSERT INTO nompersonal (
-            codigo_carnet, numero_carnet, ficha, estado, apellidos, apellido_materno,
-            nombres, sexo, nacionalidad, fecnac, lugarnac, cedula, seguro_social,
-            estado_civil, dv, direccion, direccion2, telefonos, TelefonoResidencial,
-            TelefonoCelular, email, fecing, fecha_resolucion_baja, cuenta_pago,
-            ISRFijoPeriodo, suesal, sueldopro, salario_diario, rata_x_hr, gastos_representacion,
-            gasto_rep_diario, rata_hora_gasto_rep, ConceptoBaja, tipnom, apenom, foto,
-            nomposicion_id, codcargo, forcob, cuentacob, created_at, turno_id,
-            fin_periodo, tipo_empleado, observaciones, IdDepartamento, nomfuncion_id,
-            usuario_workflow, usr_password, proyecto, Hijos, IdTipoSangre, EnfermedadesYAlergias,
-            ContactoEmergencia, TelefonoEmergencia, ParentescoEmergencia, DireccionEmergencia,
-            ContactoEmergencia2, TelefonoEmergencia2, ParentescoEmergencia2, DireccionEmergencia2,
-            tipemp, fecharetiro, tipo_funcionario, zona_economica, barrio, calle, num_casa, id_pais, motivo_retiro,
-            descripcion_pago
-        )
-        SELECT * FROM temp_personal tp
-        WHERE NOT EXISTS (
-            SELECT 1 FROM nompersonal np 
-            WHERE TRIM(np.numero_carnet) = TRIM(tp.numero_carnet)
-        )
-    `);
-
-    // Actualizar conficha con el mayor valor encontrado
-    await connection.execute(`
-        UPDATE nomempresa 
-        SET conficha = (
-            SELECT GREATEST(
-                COALESCE((SELECT MAX(ficha) FROM nompersonal), 0),
-                COALESCE(conficha, 0)
-            ) - 1
-        )
-    `);
-}
-
-async function migrarFamiliares(connection, data) {
-    console.log("\n=== Migrando Familiares ===");
-
-    // Crear tabla temporal
-    await connection.execute(`
-        CREATE TEMPORARY TABLE temp_familiares (
-            cedula VARCHAR(20),
-            ficha VARCHAR(10),
-            nombre VARCHAR(100),
-            codpar INT,
-            sexo VARCHAR(20),
-            fecha_nac DATETIME,
-            codgua INT DEFAULT 0,
-            costo DECIMAL(10,2) DEFAULT 0,
-            nacionalidad VARCHAR(1) DEFAULT 'N',
-            afiliado TINYINT(1) DEFAULT 0,
-            tipnom INT DEFAULT 1,
-            cedula_beneficiario VARCHAR(20),
-            apellido VARCHAR(100),
-            niveledu VARCHAR(100) DEFAULT '',
-            institucion VARCHAR(100) DEFAULT '',
-            tallafranela VARCHAR(50) DEFAULT '',
-            tallamono VARCHAR(50) DEFAULT '',
-            fam_telf VARCHAR(15),
-            fecha_beca DATE,
-            beca INT DEFAULT 0,
-            promedionota DECIMAL(10,2) DEFAULT 0,
-            vive INT DEFAULT 1,
-            discapacidad INT DEFAULT 0
-        )
-    `);
-
-    function isDiscapacitado(valor) {
-        if (!valor) return false;
-
-        try {
-            if (typeof valor === 'number') return false;
-
-            const valorLimpio = valor.toString().trim().toUpperCase();
-
-            return valorLimpio === 'SI';
-        } catch (error) {
-            console.log(`Error procesando valor de discapacidad: ${valor}`, error);
-            return false;
-        }
-    }
-
-    // Procesar familiares
-    const familiares = [];
-    for (const row of data) {
-        // Procesar el primer beneficiario (sin número)
-        if (row.Beneficiario) {
-            const codpar = await mapParentesco(connection, row.Parentesco);
-            const ficha = row.Personal ? parseInt(row.Personal.replace(/\D/g, ''), 10).toString() : '';
-
-            familiares.push({
-                cedula: row.Cedula,
-                ficha: ficha,
-                nombre: row.Beneficiario,
-                codpar: codpar,
-                cedula_beneficiario: row.Cedula1 || '',
-                fecha_nac: formatExcelDate(row.BeneficiarioNacimiento),
-                discapacidad: isDiscapacitado(row.Discapacidad1) ? 1 : 0
-            });
-        }
-
-        // Procesar beneficiarios numerados (2-8)
-        for (let i = 2; i <= 8; i++) {
-            if (row[`Beneficiario${i}`]) {
-                const codpar = await mapParentesco(connection, row[`Parentesco${i}`]);
-                const ficha = row.Personal ? parseInt(row.Personal.replace(/\D/g, ''), 10).toString() : '';
-
-                familiares.push({
-                    cedula: row.Cedula,
-                    ficha: ficha,
-                    nombre: row[`Beneficiario${i}`],
-                    codpar: codpar,
-                    cedula_beneficiario: row[`Cedula${i}`] || '',
-                    fecha_nac: formatExcelDate(row[`Beneficiario${i}Nacimiento`]),
-                    discapacidad: isDiscapacitado(row[`Discapacidad${i}`]) ? 1 : 0
-                });
-            }
-        }
-    }
-
-    // Insertar en lotes
-    if (familiares.length > 0) {
-        const insertQuery = `
-            INSERT INTO temp_familiares 
-            (cedula, ficha, nombre, codpar, cedula_beneficiario, fecha_nac, discapacidad)
-            VALUES ?
-        `;
-
-        // Procesar por lotes de 1000
-        for (let i = 0; i < familiares.length; i += 1000) {
-            const batch = familiares.slice(i, i + 1000).map(f => [
-                f.cedula,
-                f.ficha,
-                f.nombre,
-                f.codpar,
-                f.cedula_beneficiario,
-                f.fecha_nac,
-                f.discapacidad
-            ]);
-            await connection.query(insertQuery, [batch]);
-        }
-    }
-
-    // Migrar a tabla final
-    await connection.execute(`
-        INSERT INTO nomfamiliares 
-        (cedula, ficha, nombre, codpar, sexo, fecha_nac, codgua, costo, 
-         nacionalidad, afiliado, tipnom, cedula_beneficiario, apellido, 
-         niveledu, institucion, tallafranela, tallamono, fam_telf, 
-         fecha_beca, beca, promedionota, vive, discapacidad)
-        SELECT 
-            cedula, ficha, nombre, codpar, sexo, fecha_nac, codgua, costo,
-            nacionalidad, afiliado, tipnom, cedula_beneficiario, apellido,
-            niveledu, institucion, tallafranela, tallamono, fam_telf,
-            fecha_beca, beca, promedionota, vive, discapacidad
-        FROM temp_familiares
-        WHERE NOT EXISTS (
-            SELECT 1 
-            FROM nomfamiliares nf 
-            WHERE nf.cedula = temp_familiares.cedula 
-            AND nf.cedula_beneficiario = temp_familiares.cedula_beneficiario
-        )
-    `);
-
-    // Limpiar tabla temporal
-    await connection.execute('DROP TEMPORARY TABLE IF EXISTS temp_familiares');
-}
-
-async function migrarPartidasPresupuestarias(connection) {
-    console.log("\n=== Migrando Partidas Presupuestarias ===");
-
-    try {
-        // Leer archivo de partidas presupuestarias
-        const workbookPartidas = xlsx.readFile('formatos/PartidaPresupuestariasNuevo.xlsx');
-        const sheetPartidas = workbookPartidas.Sheets[workbookPartidas.SheetNames[0]];
-        const partidasData = xlsx.utils.sheet_to_json(sheetPartidas);
-
-        // Crear tabla temporal
-        await connection.execute(`
-            CREATE TEMPORARY TABLE IF NOT EXISTS temp_partidas (
-                posicion VARCHAR(10),
-                posicion_formateada VARCHAR(10),
-                partida VARCHAR(50)
-            )
-        `);
-
-        const tempData = [];
-        
-        for (const row of partidasData) {
-            // Verificar que posicion existe en el objeto row
-            if (row.posicion === undefined) {
-                continue;
-            }
-            
-            // Formatear posición (ej: 26 -> 0026)
-            const posicion = row.posicion.toString();
-            const posicionFormateada = posicion.padStart(4, '0');
-            
-            // Construir partida correctamente, asegurándose que cada valor exista
-            const partida = [
-                row.codigo || '',
-                row.tipo_presupuesto || '',
-                row.programa || '',
-                row.fuente || '',
-                row.subprograma || '',
-                row.actividad || '',
-                row.objeto_gasto || ''
-            ].join('.');
-            
-            
-            tempData.push([posicion, posicionFormateada, partida]);
-        }
-
-        // Insertar datos en la tabla temporal
-        if (tempData.length > 0) {
-            await connection.query(`
-                INSERT INTO temp_partidas (posicion, posicion_formateada, partida)
-                VALUES ?
-            `, [tempData]);
-            
-        }
-
-        // Actualizar la tabla nomposicion con las partidas
-        // Aquí la clave es asegurarse que la relación es correcta
-        const updateResult = await connection.execute(`
-            UPDATE nomposicion np
-            JOIN temp_partidas tp ON np.nomposicion_id = tp.posicion_formateada
-            SET np.partida = tp.partida
-            WHERE tp.partida IS NOT NULL
-        `);
-        
-        
-        // Insertar registros en la tabla cwprecue (solo las partidas únicas)
-        const insertResult = await connection.execute(`
-            INSERT INTO cwprecue (CodCue, Denominacion, Tipocta, Tipopuc)
-            SELECT DISTINCT
-                partida,
-                partida,
-                0,
-                ''
-            FROM temp_partidas
-            WHERE partida IS NOT NULL
-            AND NOT EXISTS (
-                SELECT 1 FROM cwprecue 
-                WHERE CodCue = temp_partidas.partida
-            )
-        `);
-        
-        
-        // Limpiar
-        await connection.execute(`DROP TEMPORARY TABLE IF EXISTS temp_partidas`);
-        
-        return true;
-    } catch (error) {
-        console.error('Error durante la migración:', error);
+        console.error('Error en actualizarCamposEspecificos:', error);
         throw error;
     }
 }
@@ -1812,26 +488,27 @@ async function main() {
             connectTimeout: 60000
         });
 
-        // Leer archivo de personal Personal_al_2025-03-21.xlsx
-        const workbookPersonal = xlsx.readFile('formatos/Personal_al_2025-03-21.xlsx');
+        console.log("=== MIGRACIÓN DE ACTUALIZACIÓN ESPECÍFICA ===");
+        console.log("Campos a actualizar:");
+        console.log("- Salarios (suesal, sueldopro, salario_diario, rata_x_hr)");
+        console.log("- Gastos de representación");
+        console.log("- Estructura organizacional (nomnivel1-5) - SOLO NUEVOS");
+        console.log("- cuentacob, forcob, nomposicion_id");
+        console.log("- nomfuncion");
+        console.log("- marca_reloj = 1");
+
+        // Leer archivos
+        console.log("\n📁 Leyendo archivos...");
+        
+        const workbookPersonal = xlsx.readFile('formatos/Personal_Al_18072025.xlsx');
         const sheetPersonal = workbookPersonal.Sheets[workbookPersonal.SheetNames[0]];
         const dataPersonal = xlsx.utils.sheet_to_json(sheetPersonal);
+        console.log(`   Personal: ${dataPersonal.length} registros`);
 
-        // Leer archivo de estructura organizacional
         const workbookEstructura = xlsx.readFile('formatos/EstructuraOrganizacional.xlsx');
         const sheetEstructura = workbookEstructura.Sheets[workbookEstructura.SheetNames[0]];
         const dataEstructura = xlsx.utils.sheet_to_json(sheetEstructura);
-
-        // Verificar si existe el archivo de Sucursales
-        const sucursalesPath = 'formatos/Sucursales.xlsx';
-        try {
-            require('fs').accessSync(sucursalesPath, require('fs').constants.R_OK);
-            console.log("Archivo de Sucursales encontrado.");
-        } catch (error) {
-            console.error("ADVERTENCIA: No se encontró el archivo Sucursales.xlsx en la carpeta 'formatos'.");
-            console.error("Por favor, asegúrese de que el archivo existe antes de continuar.");
-            console.error("La migración de aeropuertos usará datos del archivo de personal como alternativa.");
-        }
+        console.log(`   Estructura: ${dataEstructura.length} registros`);
 
         const progressBar = new cliProgress.SingleBar({
             format: 'Progreso |{bar}| {percentage}% || {value}/{total} Módulos || {currentTask}',
@@ -1840,50 +517,44 @@ async function main() {
             hideCursor: true
         });
 
-        const totalTasks = 10; // Incrementado en 1 para incluir la migración de ubicaciones
+        const totalTasks = 4;
         progressBar.start(totalTasks, 0, { currentTask: 'Iniciando...' });
 
         try {
-            // Primero migrar la estructura organizacional
-            // progressBar.update(1, { currentTask: 'Migrando Estructura Organizacional...' });
-            // await migrarNiveles(connection, dataEstructura);
+            // 1. Actualizar estructura organizacional (sin eliminar)
+            progressBar.update(1, { currentTask: 'Actualizando Estructura Organizacional (solo nuevos)...' });
+            await actualizarEstructuraOrganizacional(connection, dataEstructura);
 
-            // progressBar.update(2, { currentTask: 'Insertando Personal...' });
-            // await insertarPersonal(connection, dataPersonal);
+            // 2. Actualizar puestos
+            progressBar.update(2, { currentTask: 'Actualizando Puestos...' });
+            await actualizarPuestos(connection, dataPersonal);
 
-            // progressBar.update(3, { currentTask: 'Migrando Bancos...' });
-            // await migrarBancos(connection, dataPersonal);
+            // 3. Actualizar niveles en personal
+            progressBar.update(3, { currentTask: 'Actualizando Niveles en Personal...' });
+            await actualizarNivelesPersonal(connection, dataPersonal);
 
-            // progressBar.update(4, { currentTask: 'Migrando Centro de Costos...' });
-            // await migrarCentroCostos(connection, dataPersonal);
-
-            await migrarAeropuertos(connection, dataPersonal);
-
-            // progressBar.update(5, { currentTask: 'Migrando Tablas Generales...' });
-            // await migrarTablasGenerales(connection, dataPersonal);
-
-            // progressBar.update(6, { currentTask: 'Migrando Puestos...' });
-            // await migrarPuestos(connection, dataPersonal);
-
-            // progressBar.update(7, { currentTask: 'Migrando Familiares...' });
-            // await migrarFamiliares(connection, dataPersonal);
-
-            // progressBar.update(8, { currentTask: 'Actualizando Niveles en Personal...' });
-            // await migrarNivelesPersonal(connection, dataPersonal);
-            
-            // progressBar.update(9, { currentTask: 'Migrando Partidas Presupuestarias...' });
-            // await migrarPartidasPresupuestarias(connection);
-            
-            // progressBar.update(10, { currentTask: 'Migrando Ubicaciones (Provincias, Distritos, Corregimientos)...' });
-            // await migrarUbicaciones(connection, dataPersonal);
+            // 4. Actualizar campos específicos
+            progressBar.update(4, { currentTask: 'Actualizando Campos Específicos...' });
+            await actualizarCamposEspecificos(connection, dataPersonal);
 
             progressBar.update(totalTasks, { currentTask: 'Completado!' });
+
         } catch (error) {
+            progressBar.stop();
             console.error('Error durante la migración:', error);
             throw error;
         }
 
         progressBar.stop();
+        
+        console.log("\n=== MIGRACIÓN COMPLETADA ===");
+        console.log("✅ Estructura organizacional actualizada (solo nuevos niveles)");
+        console.log("✅ Puestos actualizados en nomfuncion");
+        console.log("✅ Niveles organizacionales actualizados");
+        console.log("✅ Salarios y campos específicos actualizados");
+        console.log("✅ Todos los registros con marca_reloj = 1");
+        console.log("✅ NO se eliminaron registros existentes");
+
     } finally {
         if (connection) await connection.end();
     }

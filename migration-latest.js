@@ -843,7 +843,7 @@ async function main() {
         console.log("Leyendo archivos...");
         
         // 1. Personal
-        const workbookPersonal = xlsx.readFile('formatos/Personal_Al_09062025.xlsx');
+        const workbookPersonal = xlsx.readFile('formatos/Personal_Al_18072025.xlsx');
         const sheetPersonal = workbookPersonal.Sheets[workbookPersonal.SheetNames[0]];
         const dataPersonal = xlsx.utils.sheet_to_json(sheetPersonal);
         console.log(`Personal: ${dataPersonal.length} registros`);
