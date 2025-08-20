@@ -1,0 +1,32 @@
+Equipo de Capacitación
+El equipo de capacitación solicita lo siguiente:
+Que se deba cargar obligatoriamente la formación de diplomas, certificado de nacimiento, cursos, seminarios etc.
+Se entregaron anteriormente 6 reportes en excel por parte de capacitación. Se deben poder generar en reportería bajo "Capacitación". Comparto nuevamente.
+Que existan dos rubros: Capacitación Nacional y Capacitación Internacional
+La jefa de Capacitación debe entregar: memo, formularios de capacitación, misión oficial, informe final, reporte de transparencia(pendiente)
+Solicitud de cierre. Que se de la alerta
+Que Betzaira pueda ver el personal nuevo, que se le cargue en un lugar que diga"inducción de nuevo ingreso"
+Capacitaciones (verificar que el flujo es el correcto)
+Solicitud
+envía al jefe
+Jefe aprueba
+Aprueba y envía
+Dutary
+Imprime, firma y envía
+Gerencia general
+Aprueba, imprime y firma
+Misiones oficiales (verificar que el flujo sea el correcto)
+Solicitud
+envía al jefe
+Jefe aprueba
+Aprueba y envía
+Dutary
+Imprime, firma y envía
+Gerencia general
+Aprueba, imprime y firma
+Se sube un informe final de la misión
+Se sube la certificación o diploma
+Solicitud de cierre y crear alerta de anticipación de la fecha de finalización
+Porcentaje de colaboradores han participado o no en los cursos
+Modelo del formulación de convocatorias para las capacitaciones
+ 
