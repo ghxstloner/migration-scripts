@@ -5,7 +5,9 @@ import os
 from dotenv import load_dotenv
 import re
 from datetime import datetime, timedelta, date
+from dateutil.relativedelta import relativedelta
 
+# Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
 def crear_conexion_db():
@@ -24,336 +26,282 @@ def crear_conexion_db():
         print(f"Error al conectar a MySQL: {e}")
         return None
 
+def limpiar_tablas_vacaciones(cursor):
+    """Limpia la tabla de vacaciones usando TRUNCATE para reiniciar el auto_increment."""
+    try:
+        print("Limpiando tabla periodos_vacaciones...")
+        # Usamos TRUNCATE para mayor eficiencia y para reiniciar el AUTO_INCREMENT
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 0;")
+        cursor.execute("TRUNCATE TABLE periodos_vacaciones")
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 1;")
+        print("Tabla limpiada correctamente.")
+        return True
+    except Error as e:
+        print(f"Error limpiando tablas: {e}")
+        return False
+
 def limpiar_ficha(num_empleado):
-    """
-    Limpia el número de empleado, extrayendo solo los dígitos
-    y convirtiéndolo a entero.
-    """
+    """Limpia el número de empleado, extrayendo solo los dígitos."""
     if pd.isna(num_empleado):
         return None
-    
-    # Convertir a string para poder usar re.sub
-    num_empleado_str = str(num_empleado)
-
     try:
-        solo_digitos = re.sub(r'\D', '', num_empleado_str)
-        if solo_digitos:
-            return int(solo_digitos)
-        else:
-            return None
+        # Extrae todos los dígitos de la cadena
+        solo_digitos = re.sub(r'\D', '', str(num_empleado))
+        return int(solo_digitos) if solo_digitos else None
     except (ValueError, TypeError):
         return None
 
-def obtener_empleado_por_ficha(cursor, ficha):
-    """Busca un empleado por su número de ficha y retorna información completa."""
-    if ficha is None:
+def limpiar_cedula(cedula_raw):
+    """Limpia y formatea el número de cédula."""
+    if pd.isna(cedula_raw):
         return None
-    try:
-        query = """SELECT personal_id, cedula, apenom, 
-                          nomposicion_id, fecing, useruid, usuario_workflow, ficha
-                   FROM nompersonal 
-                   WHERE ficha = %s"""
-        cursor.execute(query, (ficha,))
-        resultado = cursor.fetchone()
-        return resultado if resultado else None
-    except Error as e:
-        print(f"Error buscando ficha {ficha}: {e}")
-        return None
+    # Elimina todo lo que no sea número o letra (para casos como E-8-12345)
+    return re.sub(r'[^a-zA-Z0-9]', '', str(cedula_raw)).strip()
 
-def verificar_periodo_existente(cursor, cedula, fecha_inicio, fecha_fin):
-    """Verifica si ya existe un período de vacaciones para las fechas dadas."""
+def obtener_empleado_por_ficha_cedula(cursor, ficha, cedula):
+    """Busca un empleado por su número de ficha o cédula."""
     try:
-        query = """SELECT id FROM periodos_vacaciones 
-                   WHERE cedula = %s AND fini_periodo = %s AND ffin_periodo = %s AND tipo = 1"""
-        cursor.execute(query, (cedula, fecha_inicio, fecha_fin))
-        return cursor.fetchone() is not None
+        query = "SELECT personal_id, cedula, apenom, fecing, ficha FROM nompersonal WHERE ficha = %s OR cedula = %s"
+        cursor.execute(query, (ficha, cedula))
+        return cursor.fetchone()
     except Error as e:
-        print(f"Error verificando período existente: {e}")
-        return False
+        print(f"Error buscando empleado (ficha {ficha}, cédula {cedula}): {e}")
+        return None
 
 def normalizar_fecha(fecha_input):
-    """
-    Convierte cualquier tipo de fecha (str, date, datetime) a datetime.
-    Esta función resuelve el conflicto de tipos.
-    """
-    if fecha_input is None:
+    """Convierte de forma segura varios formatos de fecha a un objeto datetime."""
+    if pd.isna(fecha_input):
         return None
-    
-    if isinstance(fecha_input, str):
-        try:
-            return datetime.strptime(fecha_input, '%Y-%m-%d')
-        except ValueError:
-            try:
-                return datetime.strptime(fecha_input, '%Y-%m-%d %H:%M:%S')
-            except ValueError:
-                return None
-    elif isinstance(fecha_input, date) and not isinstance(fecha_input, datetime):
-        # Convertir date a datetime (hora 00:00:00)
-        return datetime.combine(fecha_input, datetime.min.time())
-    elif isinstance(fecha_input, datetime):
+    if isinstance(fecha_input, datetime):
         return fecha_input
-    else:
-        return None
+    if isinstance(fecha_input, date):
+        return datetime.combine(fecha_input, datetime.min.time())
+    return None # Si no es un tipo de fecha reconocido, no se procesa
 
-def crear_fecha_segura(anio, mes, dia):
-    """Crea una fecha válida, ajustando el día si es necesario (por ejemplo, 29 de febrero en años no bisiestos)."""
-    try:
-        return datetime(anio, mes, dia)
-    except ValueError:
-        # Si el día no existe, usar el último día del mes
-        if mes == 2:
-            # Si es febrero, usar 28 o 29 según el año
-            if (anio % 4 == 0 and (anio % 100 != 0 or anio % 400 == 0)):
-                return datetime(anio, 2, 29)
-            else:
-                return datetime(anio, 2, 28)
-        else:
-            # Para otros meses, usar el último día del mes
-            for d in range(31, 27, -1):
-                try:
-                    return datetime(anio, mes, d)
-                except ValueError:
-                    continue
-        raise
-
-def generar_periodos_historicos(cursor, empleado_info, dias_pendientes_totales):
+def generar_periodos_historicos(cursor, empleado_info, dias_pendientes, dias_caducados):
     """
-    Calcula y genera los períodos históricos de vacaciones basado en la fecha de ingreso
-    y los días pendientes, distribuyéndolos en bloques de 30.
+    Genera los períodos históricos de forma precisa, distribuyendo tanto los días
+    caducados como el saldo en sus respectivos períodos hacia atrás, respetando
+    la regla de adquisición de derecho a los 11 meses.
     """
     try:
-        personal_id, cedula, nombre_completo, _, fecing, _, _, ficha = empleado_info
+        personal_id, cedula, nombre_completo, fecing, ficha = empleado_info
         
-        if not fecing:
-            return False, f"Empleado con ficha {ficha} no tiene fecha de ingreso (fecing)."
+        fecha_ingreso = normalizar_fecha(fecing)
+        if not fecha_ingreso:
+            return False, f"Empleado {ficha} no tiene fecha de ingreso válida."
 
-        dias_a_migrar = int(float(dias_pendientes_totales))
+        dias_saldo = int(float(dias_pendientes)) if pd.notna(dias_pendientes) else 0
+        dias_caducados_int = int(float(dias_caducados)) if pd.notna(dias_caducados) else 0
+        
+        # --- MANEJO DE SALDO NEGATIVO ---
+        if dias_saldo < 0:
+            fecha_actual = datetime.now()
+            anio_actual_aniversario = fecha_ingreso.year + (fecha_actual.year - fecha_ingreso.year)
+            fecha_aniversario_actual = fecha_ingreso.replace(year=anio_actual_aniversario)
+            
+            if fecha_actual < fecha_aniversario_actual:
+                fecha_inicio_periodo = fecha_aniversario_actual - relativedelta(years=1)
+                fecha_fin_periodo = fecha_aniversario_actual - timedelta(days=1)
+            else:
+                fecha_inicio_periodo = fecha_aniversario_actual
+                fecha_fin_periodo = fecha_aniversario_actual + relativedelta(years=1) - timedelta(days=1)
+            
+            descripcion = f"Ajuste por migración de saldo negativo: {dias_saldo} días"
+            cursor.execute(
+                """INSERT INTO periodos_vacaciones (cedula, tipo, fini_periodo, ffin_periodo, asignados, dias, saldo, caducados, estatus, observacion, saldo_anterior)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (cedula, 4, fecha_inicio_periodo.date(), fecha_fin_periodo.date(), 0, abs(dias_saldo), dias_saldo, 0, 1, descripcion, 0)
+            )
+            return True, f"Ajuste por saldo negativo ({dias_saldo} días) creado."
+
+        if dias_saldo <= 0 and dias_caducados_int <= 0:
+            return False, "No hay días positivos para migrar."
+
+        # --- LÓGICA UNIFICADA Y CORREGIDA PARA CREAR PERÍODOS HISTÓRICOS ---
+        
+        dias_caducados_restantes = dias_caducados_int
+        dias_saldo_restantes = dias_saldo
         fecha_actual = datetime.now()
         
-        # Normalizar fecha_ingreso para evitar conflictos de tipos
-        fecha_ingreso = normalizar_fecha(fecing)
-        if fecha_ingreso is None:
-            return False, f"Empleado con ficha {ficha} tiene fecha de ingreso inválida: {fecing}"
+        # --- INICIO DE LA MODIFICACIÓN CLAVE ---
+        # Determina el punto de partida del bucle basado en la regla de los 11 meses.
+        # Esto asegura que se incluya el período actual si el derecho ya fue adquirido.
+        aniversario_en_anio_actual = fecha_ingreso.replace(year=fecha_actual.year)
+        fecha_derecho_adquirido = aniversario_en_anio_actual - relativedelta(months=1)
 
-        # Determinar el último aniversario de trabajo que ya pasó
-        ultimo_aniversario = crear_fecha_segura(fecha_actual.year, fecha_ingreso.month, fecha_ingreso.day)
-        if ultimo_aniversario > fecha_actual:
-            ultimo_aniversario = crear_fecha_segura(fecha_actual.year - 1, fecha_ingreso.month, fecha_ingreso.day)
-
-        anio_fin_periodo = ultimo_aniversario.year
+        if fecha_actual >= fecha_derecho_adquirido:
+            # Si ya se cumplieron 11 meses del período actual, el punto de partida es el aniversario de este año.
+            punto_partida_loop = aniversario_en_anio_actual
+        else:
+            # Si no, el último período con derecho adquirido fue el del año pasado.
+            punto_partida_loop = aniversario_en_anio_actual - relativedelta(years=1)
+        
+        anio_periodo_actual = punto_partida_loop.year
+        # --- FIN DE LA MODIFICACIÓN CLAVE ---
+        
         periodos_creados = 0
-        periodos_existentes = 0
 
-        while dias_a_migrar > 0:
-            # Usar crear_fecha_segura para ambas fechas del período
-            print(f"Creando período para año {anio_fin_periodo}, mes={fecha_ingreso.month}, dia={fecha_ingreso.day} (ficha: {ficha})")
-
-            try:
-                # Fecha fin del período (ej: 14-05-2024)
-                fecha_fin_periodo_dt = crear_fecha_segura(anio_fin_periodo, fecha_ingreso.month, fecha_ingreso.day) - timedelta(days=1)
-                
-                # Fecha inicio del período (ej: 15-05-2023) - usar crear_fecha_segura para el año anterior
-                fecha_inicio_periodo_dt = crear_fecha_segura(anio_fin_periodo - 1, fecha_ingreso.month, fecha_ingreso.day)
-                
-            except Exception as e:
-                print(f"❌ Error creando fechas para período {anio_fin_periodo} (ficha {ficha}): {e}")
-                return False, f"Error creando fechas para período {anio_fin_periodo}: {e}"
-
-            fecha_inicio_str = fecha_inicio_periodo_dt.strftime('%Y-%m-%d')
-            fecha_fin_str = fecha_fin_periodo_dt.strftime('%Y-%m-%d')
-
-            # Verificar que las fechas son lógicas (fin debe ser después de inicio)
-            if fecha_fin_periodo_dt <= fecha_inicio_periodo_dt:
-                print(f"❌ Error: Fecha fin ({fecha_fin_str}) no es posterior a fecha inicio ({fecha_inicio_str}) para ficha {ficha}")
-                anio_fin_periodo -= 1
-                if anio_fin_periodo < fecha_ingreso.year:
-                    break
-                continue
-
-            if verificar_periodo_existente(cursor, cedula, fecha_inicio_str, fecha_fin_str):
-                print(f"📋 Período {fecha_inicio_str} al {fecha_fin_str} ya existe para ficha {ficha}")
-                anio_fin_periodo -= 1
-                periodos_existentes += 1
-                # Si el período más reciente ya existe, asumimos que no hay nada que migrar
-                if anio_fin_periodo < fecha_ingreso.year:
-                    break
-                continue
-
-            dias_este_periodo = min(dias_a_migrar, 30)
-            descripcion = f"Saldo histórico migrado ({dias_este_periodo} de {dias_pendientes_totales}) - Período {fecha_inicio_periodo_dt.year}-{fecha_fin_periodo_dt.year}"
+        while (dias_saldo_restantes > 0 or dias_caducados_restantes > 0) and anio_periodo_actual >= fecha_ingreso.year:
             
-            insert_query = """INSERT INTO periodos_vacaciones 
-                            (cedula, tipo, fini_periodo, ffin_periodo, asignados, saldo,
-                            estatus, observacion, fecha_creacion, usuario_creacion, fecha_efectivas,
-                            saldo_anterior, no_resolucion, fecha_resolucion)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+            # La fecha de fin del período de trabajo es el día del aniversario (fecha de adquisición)
+            fecha_adquisicion = fecha_ingreso.replace(year=anio_periodo_actual)
+            fecha_inicio_periodo_trabajo = fecha_adquisicion - relativedelta(years=1)
             
-            cursor.execute(insert_query, (
-                cedula, 1, fecha_inicio_str, fecha_fin_str,
-                dias_este_periodo, dias_este_periodo,
-                1, descripcion, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'MIGRACION_PYTHON',
-                datetime.now().strftime('%Y-%m-%d'), 0, f'MIG-{ficha}-{fecha_inicio_periodo_dt.year}', datetime.now().strftime('%Y-%m-%d')
-            ))
-            
-            print(f"✅ Período creado: {fecha_inicio_str} al {fecha_fin_str} con {dias_este_periodo} días (ficha {ficha})")
-            periodos_creados += 1
-            dias_a_migrar -= dias_este_periodo
-            anio_fin_periodo -= 1
-
-            # Evitar crear períodos antes de la fecha de ingreso
-            if anio_fin_periodo < fecha_ingreso.year:
-                print(f"⚠️ Se alcanzó el año de ingreso ({fecha_ingreso.year}), deteniendo creación de períodos para ficha {ficha}")
+            if fecha_inicio_periodo_trabajo < fecha_ingreso:
+                fecha_inicio_periodo_trabajo = fecha_ingreso
+            if fecha_adquisicion <= fecha_inicio_periodo_trabajo:
                 break
+            
+            fecha_vencimiento = fecha_adquisicion + relativedelta(years=3)
+            es_periodo_caducado = fecha_actual > fecha_vencimiento
+
+            saldo_este_periodo = 0
+            caducados_este_periodo = 0
+
+            if es_periodo_caducado and dias_caducados_restantes > 0:
+                caducados_este_periodo = min(dias_caducados_restantes, 30)
+                dias_caducados_restantes -= caducados_este_periodo
+            elif not es_periodo_caducado and dias_saldo_restantes > 0:
+                saldo_este_periodo = min(dias_saldo_restantes, 30)
+                dias_saldo_restantes -= saldo_este_periodo
+            
+            if saldo_este_periodo > 0 or caducados_este_periodo > 0:
+                total_asignados = saldo_este_periodo + caducados_este_periodo
+                descripcion = f"Migración histórica - Saldo: {saldo_este_periodo}, Caducados: {caducados_este_periodo}"
+
+                # El período en la BD va desde el inicio del trabajo hasta el día ANTES del aniversario
+                fini_db = fecha_inicio_periodo_trabajo.date()
+                ffin_db = (fecha_adquisicion - timedelta(days=1)).date()
+
+                cursor.execute(
+                    """INSERT INTO periodos_vacaciones (cedula, tipo, fini_periodo, ffin_periodo, asignados, dias, saldo, caducados, estatus, observacion, saldo_anterior)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (cedula, 1, fini_db, ffin_db, total_asignados, 0, saldo_este_periodo, caducados_este_periodo, 1, descripcion, 0)
+                )
+                periodos_creados += 1
+
+            anio_periodo_actual -= 1
 
         if periodos_creados > 0:
-            return True, f"{dias_pendientes_totales} días distribuidos en {periodos_creados} período(s) histórico(s)."
-        elif periodos_existentes > 0:
-            return False, "Todos los períodos calculados ya existían en la base de datos."
+            return True, f"Migrados {dias_saldo} días de saldo y {dias_caducados_int} caducados en {periodos_creados} período(s) históricos."
         else:
-            return False, "No se generaron períodos."
+            return False, "No se generaron períodos (revisar datos de entrada)."
 
     except Error as e:
         return False, f"Error de base de datos: {e}"
     except Exception as e:
-        return False, f"Error inesperado en cálculo de períodos: {e}"
+        return False, f"Error inesperado en la lógica de generación: {e}"
 
 def migrar_vacaciones_desde_excel(ruta_excel, connection):
     """Función principal para leer el Excel y migrar las vacaciones."""
-    print(f"\n=== Iniciando Migración de Vacaciones desde: {ruta_excel} ===")
+    print(f"\nIniciando Migración de Vacaciones desde: {ruta_excel}")
     
     try:
         df = pd.read_excel(ruta_excel, dtype=str)
-    except FileNotFoundError:
-        print(f"❌ ERROR: Archivo no encontrado en la ruta: {ruta_excel}")
-        return
     except Exception as e:
-        print(f"❌ ERROR: No se pudo leer el archivo Excel. Causa: {e}")
+        print(f"ERROR: No se pudo leer el archivo Excel. Causa: {e}")
         return
 
-    print(f"Filas totales en el archivo: {len(df)}")
+    df.columns = df.columns.str.strip()
     
-    # Mapeo de columnas para mayor flexibilidad
+    # Mapeo de columnas robusto a posibles variaciones
     MAPEO_COLUMNAS = {
-        'ficha': 'No. D mplado',
-        'dias_pendientes': 'DIAS PENDIENTES A LA FECHA'
+        'ficha': 'NO. DE EMPLEADO',
+        'cedula': 'No. DE CEDULA',
+        'dias_pendientes': 'DIAS PENDIENTES A LA FECHA',
+        'dias_caducados': 'DIAS CADUCADOS'
     }
     
-    # Limpiar nombres de columnas en el DataFrame
-    df.columns = df.columns.str.strip().str.replace(r'\s+', ' ', regex=True)
-    print(f"Columnas detectadas: {df.columns.tolist()}")
+    # Normalizar nombres de columnas en el DataFrame para que coincidan
+    df.rename(columns=lambda c: re.sub(r'\s+', ' ', c).strip(), inplace=True)
+    
+    print(f"Columnas detectadas y normalizadas: {df.columns.tolist()}")
 
-    columnas_necesarias = list(MAPEO_COLUMNAS.values())
-    columnas_faltantes = [col for col in columnas_necesarias if col not in df.columns]
-    
-    if columnas_faltantes:
-        print(f"❌ ERROR: Columnas faltantes en el Excel: {columnas_faltantes}")
-        return
-
-    df_valido = df.dropna(subset=columnas_necesarias)
-    print(f"Filas con datos suficientes para procesar: {len(df_valido)}")
-    
-    if df_valido.empty:
-        print("No hay datos válidos para procesar. Finalizando.")
-        return
-    
     cursor = connection.cursor()
+    if not limpiar_tablas_vacaciones(cursor):
+        return
+    
     migrados = 0
     errores = 0
     no_encontrados = 0
-    sin_dias = 0
-    ya_existentes = 0
+    sin_dias_para_migrar = 0
 
-    print(f"\n=== Iniciando procesamiento de {len(df_valido)} registros ===")
+    print(f"\nIniciando procesamiento de {len(df)} registros")
 
-    for index, row in df_valido.iterrows():
+    for index, row in df.iterrows():
         ficha_raw = row.get(MAPEO_COLUMNAS['ficha'])
-        dias_pendientes_raw = row.get(MAPEO_COLUMNAS['dias_pendientes'])
+        cedula_raw = row.get(MAPEO_COLUMNAS['cedula'])
         
-        try:
-            ficha = limpiar_ficha(ficha_raw)
-            if ficha is None:
-                print(f"⚠️ Fila {index+2}: 'No. D mplado' ('{ficha_raw}') inválido. SALTANDO.")
-                errores += 1
-                continue
-            
-            try:
-                dias_pendientes = int(float(dias_pendientes_raw))
-                if dias_pendientes <= 0:
-                    sin_dias += 1
-                    continue
-            except (ValueError, TypeError, AttributeError):
-                print(f"⚠️ Fila {index+2}: 'Días pendientes' ('{dias_pendientes_raw}') inválidos para ficha {ficha}. SALTANDO.")
-                errores += 1
-                continue
+        ficha = limpiar_ficha(ficha_raw)
+        cedula = limpiar_cedula(cedula_raw)
+        
+        if ficha is None and cedula is None:
+            continue
 
-            empleado_info = obtener_empleado_por_ficha(cursor, ficha)
+        try:
+            empleado_info = obtener_empleado_por_ficha_cedula(cursor, ficha, cedula)
             if not empleado_info:
-                print(f"❓ Fila {index+2}: Empleado con ficha {ficha} no encontrado en la BD. SALTANDO.")
+                print(f"Fila {index+2}: Empleado no encontrado (Ficha: {ficha}, Cédula: {cedula}). SALTANDO.")
                 no_encontrados += 1
                 continue
             
-            nombre_completo = empleado_info[2]
+            dias_pendientes = row.get(MAPEO_COLUMNAS['dias_pendientes'])
+            dias_caducados = row.get(MAPEO_COLUMNAS['dias_caducados'])
             
-            migrado, mensaje = generar_periodos_historicos(cursor, empleado_info, dias_pendientes)
+            migrado, mensaje = generar_periodos_historicos(cursor, empleado_info, dias_pendientes, dias_caducados)
             
             if migrado:
-                print(f"✅ Ficha {ficha} ({nombre_completo}): {mensaje}")
+                print(f"ÉXITO Ficha {ficha}: {mensaje}")
                 migrados += 1
             else:
-                if "ya existían" in mensaje:
-                    ya_existentes += 1
-                    print(f"📋 Ficha {ficha} ({nombre_completo}): {mensaje}")
+                if "No hay días" in mensaje:
+                    sin_dias_para_migrar += 1
                 else:
+                    print(f"ERROR Fila {index+2} (Ficha {ficha}): {mensaje}")
                     errores += 1
-                    print(f"❌ Fila {index+2}: Error migrando ficha {ficha}. {mensaje}")
 
         except Exception as e:
-            print(f"❌ Fila {index+2}: Error general inesperado procesando ficha {ficha_raw}: {e}")
+            print(f"ERROR CRÍTICO Fila {index+2} (Ficha {ficha}): {e}")
             errores += 1
             continue
 
-    try:
-        if migrados > 0:
-            connection.commit()
-            print(f"\n✅ Transacción confirmada en la base de datos. {migrados} empleado(s) actualizado(s).")
-        else:
-            print("\nℹ️ No se realizaron cambios en la base de datos, no es necesario confirmar la transacción.")
-    except Error as e:
-        print(f"\n❌ Error al confirmar la transacción: {e}")
+    if migrados > 0:
+        connection.commit()
+        print(f"\nTransacción confirmada. {migrados} empleado(s) con datos migrados.")
+    else:
         connection.rollback()
+        print("\nNo se realizaron cambios en la base de datos.")
     
     cursor.close()
     
     print("\n" + "="*70)
-    print("=== RESUMEN DE LA MIGRACIÓN DE VACACIONES ===")
-    print(f"📊 Registros en Excel con datos válidos: {len(df_valido)}")
-    print(f"✅ Empleados con saldos migrados:       {migrados}")
-    print(f"📋 Empleados con períodos ya existentes: {ya_existentes}")
-    print(f"ℹ️ Empleados sin días pendientes:        {sin_dias}")
-    print(f"❓ Empleados no encontrados en BD:       {no_encontrados}")
-    print(f"❌ Registros con errores:                {errores}")
+    print("RESUMEN DE LA MIGRACIÓN")
+    print(f"Registros procesados:         {len(df)}")
+    print(f"Empleados migrados:           {migrados}")
+    print(f"Sin días para migrar:         {sin_dias_para_migrar}")
+    print(f"No encontrados en BD:         {no_encontrados}")
+    print(f"Errores de procesamiento:     {errores}")
     print("="*70)
 
-# --- Bloque de Ejecución Principal ---
+# --- Ejecución Principal ---
 if __name__ == "__main__":
-    print("🚀 MIGRADOR DE VACACIONES PENDIENTES (Versión Histórica)")
-    print("=" * 60)
+    print("MIGRADOR DE VACACIONES PENDIENTES")
+    print("=" * 50)
     
     db_connection = crear_conexion_db()
 
     if db_connection:
-        # Asegúrate de que esta ruta sea correcta
-        ruta_archivo_excel = 'formatos/VACACIONES-JUNIO.xlsx'
+        ruta_archivo_excel = 'formatos/VACACIONES-AGOSTO.xlsx'
         
-        if not os.path.exists(ruta_archivo_excel):
-            print(f"❌ El archivo no se encuentra en la ruta especificada: {ruta_archivo_excel}")
-        else:
-            print(f"📁 Archivo encontrado: {ruta_archivo_excel}")
+        if os.path.exists(ruta_archivo_excel):
+            print(f"Archivo encontrado: {ruta_archivo_excel}")
             migrar_vacaciones_desde_excel(ruta_archivo_excel, db_connection)
-            
-        db_connection.close()
-        print("\n🏁 Conexión a la base de datos cerrada.")
+            db_connection.close()
+            print("\nConexión cerrada.")
+        else:
+            print(f"ERROR: El archivo no se encuentra en la ruta: {ruta_archivo_excel}")
     else:
-        print("❌ No se pudo establecer conexión con la base de datos.")
+        print("Fallo en la conexión a la base de datos. No se puede continuar.")
 
-    print("🏁 Proceso de migración de vacaciones completado.")
+    print("Proceso completado.")
