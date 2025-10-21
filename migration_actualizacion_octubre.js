@@ -40,6 +40,9 @@ function formatearNombresIntelesis(apellidoPaterno, apellidoMaterno, nombre) {
     const apellidoM = (apellidoMaterno || '').toString().trim();
     const nombreCompleto = (nombre || '').toString().trim();
     
+    // Verificar si apellidoMaterno es realmente NULL o vacío
+    const apellidoMaternoValido = apellidoM && apellidoM !== 'NULL' && apellidoM !== 'null' && apellidoM !== '';
+    
     // Extraer partes del nombre
     const partesNombre = nombreCompleto.split(' ').filter(parte => parte.trim());
     
@@ -51,16 +54,13 @@ function formatearNombresIntelesis(apellidoPaterno, apellidoMaterno, nombre) {
         primerNombre = partesNombre[0];
     }
     if (partesNombre.length > 1) {
-        segundoNombre = partesNombre[1];
+        // Unir todas las partes restantes como segundo nombre
+        segundoNombre = partesNombre.slice(1).join(' ');
         inicialSegundoNombre = segundoNombre.charAt(0).toUpperCase();
     }
     
-    // Construir apellidos con inicial del segundo apellido
+    // Construir apellidos - solo el primer apellido
     let apellidosCompletos = apellidoP;
-    if (apellidoM) {
-        const inicialSegundoApellido = apellidoM.charAt(0).toUpperCase();
-        apellidosCompletos += ` ${inicialSegundoApellido}`;
-    }
     
     // Construir nombre completo con inicial del segundo nombre
     let nombreFormateado = primerNombre;
@@ -73,7 +73,7 @@ function formatearNombresIntelesis(apellidoPaterno, apellidoMaterno, nombre) {
     
     return {
         apellidos: apellidosCompletos,
-        apellido_materno: apellidoM,
+        apellido_materno: apellidoMaternoValido ? apellidoM : null,
         nombres: primerNombre,
         nombres2: segundoNombre,
         apenom: apenom
