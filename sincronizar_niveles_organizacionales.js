@@ -702,9 +702,13 @@ function rowByParentFromState(levelState, key, parentCodorg) {
 }
 
 async function resolveExpectedRow(connection, level, key, sourceModel, state, report) {
+    const rowsByName = state[level].byKey.get(key) || [];
+
+    if (rowsByName.length === 1) {
+        return rowsByName[0];
+    }
+
     if (level === 1) {
-        const rows = state[level].byKey.get(key) || [];
-        if (rows.length === 1) return rows[0];
         return null;
     }
 
@@ -723,14 +727,9 @@ async function resolveExpectedRow(connection, level, key, sourceModel, state, re
     let row = rowByParentFromState(state[level], key, parentRow.codorg);
     if (row) return row;
 
-    const rowsByName = state[level].byKey.get(key) || [];
     if (rowsByName.length > 1) {
         row = await consolidateRowsToExpectedParent(connection, config, key, parentRow.codorg, state, report);
         if (row) return row;
-    }
-
-    if (rowsByName.length === 1) {
-        return rowsByName[0];
     }
 
     return null;
