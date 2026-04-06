@@ -600,6 +600,92 @@ async function resolveDuplicates(connection, config, canonicalMap, state, report
     state[config.level] = await refreshState(connection, config.table, state[config.level]);
 }
 
+async function consolidateRowsToExpectedParent(connection, config, key, expectedParentCodorg, state, report) {
+    const rows = state[config.level].byKey.get(key) || [];
+    if (rows.length <= 1) {
+        return rows[0] || null;
+    }
+
+    const rowsWithRefs = [];
+    for (const row of rows) {
+        const refs = await countReferences(connection, config, row.codorg);
+        rowsWithRefs.push({ row, refs });
+    }
+
+    rowsWithRefs.sort((a, b) => {
+        if (b.refs.totalRefs !== a.refs.totalRefs) return b.refs.totalRefs - a.refs.totalRefs;
+        if (Number(b.row.gerencia === expectedParentCodorg) !== Number(a.row.gerencia === expectedParentCodorg)) {
+            return Number(b.row.gerencia === expectedParentCodorg) - Number(a.row.gerencia === expectedParentCodorg);
+        }
+        return a.row.codorg - b.row.codorg;
+    });
+
+    const keeper = rowsWithRefs[0];
+
+    if (Number(keeper.row.gerencia) !== Number(expectedParentCodorg)) {
+        report.parentUpdates.push({
+            table: config.table,
+            codorg: keeper.row.codorg,
+            descrip: keeper.row.descrip,
+            from: keeper.row.gerencia,
+            to: expectedParentCodorg,
+            parent: `codorg ${expectedParentCodorg}`
+        });
+
+        if (!dryRun) {
+            await connection.execute(
+                `UPDATE ${config.table} SET gerencia = ? WHERE codorg = ?`,
+                [expectedParentCodorg, keeper.row.codorg]
+            );
+        }
+
+        keeper.row.gerencia = expectedParentCodorg;
+    }
+
+    for (const item of rowsWithRefs.slice(1)) {
+        if (config.childTable && item.refs.childRefs > 0) {
+            report.childRepoints.push({
+                childTable: config.childTable,
+                fromCodorg: item.row.codorg,
+                toCodorg: keeper.row.codorg,
+                count: item.refs.childRefs
+            });
+
+            if (!dryRun) {
+                await connection.execute(
+                    `UPDATE ${config.childTable} SET ${config.childFk} = ? WHERE ${config.childFk} = ?`,
+                    [keeper.row.codorg, item.row.codorg]
+                );
+            }
+        }
+
+        if (item.refs.personalRefs === 0) {
+            report.deletedDuplicates.push({
+                table: config.table,
+                codorg: item.row.codorg,
+                descrip: item.row.descrip
+            });
+
+            if (!dryRun) {
+                await connection.execute(
+                    `DELETE FROM ${config.table} WHERE codorg = ?`,
+                    [item.row.codorg]
+                );
+            }
+        } else {
+            report.blockedDuplicates.push({
+                table: config.table,
+                codorg: item.row.codorg,
+                descrip: item.row.descrip,
+                personalRefs: item.refs.personalRefs
+            });
+        }
+    }
+
+    state[config.level] = await refreshState(connection, config.table, state[config.level]);
+    return rowByParentFromState(state[config.level], key, expectedParentCodorg) || singleRowFromState(state[config.level], key);
+}
+
 async function loadStateForLevel(connection, table) {
     const rows = await loadTableData(connection, table);
     return rebuildStateFromRows(rows);
@@ -769,6 +855,12 @@ async function ensureLevelRows(connection, config, sourceModel, state, report) {
 
             row = rowByParentFromState(state[config.level], key, parentRow.codorg);
             if (!row) {
+                const rowsByName = state[config.level].byKey.get(key) || [];
+                if (rowsByName.length === 1) {
+                    row = rowsByName[0];
+                }
+            }
+            if (!row) {
                 row = await insertLevelRow(connection, config, state, report, node.value, parentRow.codorg, 'faltante segun Excel');
             }
         }
@@ -824,7 +916,15 @@ async function synchronizeDescriptionsAndParents(connection, config, sourceModel
             continue;
         }
 
-        const row = rowByParentFromState(state[config.level], key, parentRow.codorg);
+        let row = rowByParentFromState(state[config.level], key, parentRow.codorg);
+        if (!row) {
+            const rowsByName = state[config.level].byKey.get(key) || [];
+            if (rowsByName.length > 1) {
+                row = await consolidateRowsToExpectedParent(connection, config, key, parentRow.codorg, state, report);
+            } else if (rowsByName.length === 1) {
+                row = rowsByName[0];
+            }
+        }
         if (!row) continue;
 
         if (relation.autoResolved) {
