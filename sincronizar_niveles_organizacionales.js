@@ -701,6 +701,41 @@ function rowByParentFromState(levelState, key, parentCodorg) {
     return levelState.byComposite.get(`${key}::${parentCodorg}`) || null;
 }
 
+async function resolveExpectedRow(connection, level, key, sourceModel, state, report) {
+    if (level === 1) {
+        const rows = state[level].byKey.get(key) || [];
+        if (rows.length === 1) return rows[0];
+        return null;
+    }
+
+    const config = LEVELS.find(item => item.level === level);
+    const relation = sourceModel.canonicalRelations.get(level).get(key);
+    if (!relation) {
+        return null;
+    }
+
+    const parentLevel = relation.parentLevel || (level - 1);
+    const parentRow = await resolveExpectedRow(connection, parentLevel, relation.parentKey, sourceModel, state, report);
+    if (!parentRow) {
+        return null;
+    }
+
+    let row = rowByParentFromState(state[level], key, parentRow.codorg);
+    if (row) return row;
+
+    const rowsByName = state[level].byKey.get(key) || [];
+    if (rowsByName.length > 1) {
+        row = await consolidateRowsToExpectedParent(connection, config, key, parentRow.codorg, state, report);
+        if (row) return row;
+    }
+
+    if (rowsByName.length === 1) {
+        return rowsByName[0];
+    }
+
+    return null;
+}
+
 async function insertLevelRow(connection, config, state, report, descrip, parentCodorg, reason) {
     state[config.level].maxCodorg += 1;
     const codorg = state[config.level].maxCodorg;
@@ -843,7 +878,7 @@ async function ensureLevelRows(connection, config, sourceModel, state, report) {
             }
 
             const targetParentLevel = relation.parentLevel || (config.level - 1);
-            const parentRow = singleRowFromState(state[targetParentLevel], relation.parentKey);
+            const parentRow = await resolveExpectedRow(connection, targetParentLevel, relation.parentKey, sourceModel, state, report);
             if (!parentRow) {
                 report.unresolved.push({
                     table: config.table,
@@ -906,7 +941,7 @@ async function synchronizeDescriptionsAndParents(connection, config, sourceModel
         if (!relation) continue;
 
         const targetParentLevel = relation.parentLevel || (config.level - 1);
-        const parentRow = singleRowFromState(state[targetParentLevel], relation.parentKey);
+        const parentRow = await resolveExpectedRow(connection, targetParentLevel, relation.parentKey, sourceModel, state, report);
         if (!parentRow) {
             report.unresolved.push({
                 table: config.table,
