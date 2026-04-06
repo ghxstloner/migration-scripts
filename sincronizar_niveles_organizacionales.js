@@ -1122,6 +1122,37 @@ async function syncNompersonalNivel4FromNivel5(connection, report) {
     }
 }
 
+async function cleanupDeterministicRows(connection, sourceModel, state, report) {
+    for (const config of LEVELS.filter(item => item.level > 1)) {
+        const conflictKeys = new Set((sourceModel.relationConflicts.get(config.level) || []).map(item => item.childKey));
+        const relations = sourceModel.canonicalRelations.get(config.level);
+
+        for (const [key, relation] of relations.entries()) {
+            if (conflictKeys.has(key)) {
+                continue;
+            }
+
+            const rowsByName = state[config.level].byKey.get(key) || [];
+            if (rowsByName.length === 0) {
+                continue;
+            }
+
+            const targetParentLevel = relation.parentLevel || (config.level - 1);
+            const parentRow = await resolveExpectedRow(connection, targetParentLevel, relation.parentKey, sourceModel, state, report);
+            if (!parentRow) {
+                continue;
+            }
+
+            const exactRow = rowByParentFromState(state[config.level], key, parentRow.codorg);
+            if (rowsByName.length === 1 && exactRow) {
+                continue;
+            }
+
+            await consolidateRowsToExpectedParent(connection, config, key, parentRow.codorg, state, report);
+        }
+    }
+}
+
 function getLevelByTable(tableName) {
     const config = LEVELS.find(item => item.table === tableName);
     return config ? config.level : null;
@@ -1292,6 +1323,7 @@ async function main() {
         }
 
         await syncNompersonalNivel4FromNivel5(connection, report);
+        await cleanupDeterministicRows(connection, sourceModel, state, report);
         await annotateConflictsWithActivePersonnel(connection, state, report);
 
         if (!dryRun) {
