@@ -107,6 +107,14 @@ const RELATION_OVERRIDES = {
     }
 };
 
+const EXPEDIENTE_HIERARCHY_CHANGE_CONDITION = `(
+    e.codnivel1_nuevo IS NOT NULL OR
+    e.codnivel2_nuevo IS NOT NULL OR
+    e.codnivel3_nuevo IS NOT NULL OR
+    e.codnivel4_nuevo IS NOT NULL OR
+    e.codnivel5_nuevo IS NOT NULL
+)`;
+
 function normalizeOverrideKey(value) {
     return value
         .toString()
@@ -474,6 +482,80 @@ async function countReferences(connection, config, codorg) {
     return { childRefs, personalRefs, totalRefs: childRefs + personalRefs };
 }
 
+async function repointNompersonalReferences(connection, config, fromCodorg, toCodorg, descrip, report) {
+    const selectSql = `
+        SELECT np.personal_id, np.ficha, np.numero_carnet, np.apenom
+        FROM nompersonal np
+        WHERE np.${config.personalFk} = ?
+          AND NOT EXISTS (
+              SELECT 1
+              FROM expediente e
+              WHERE e.personal_id = np.personal_id
+                AND ${EXPEDIENTE_HIERARCHY_CHANGE_CONDITION}
+          )
+    `;
+
+    const blockedSql = `
+        SELECT COUNT(*) AS total
+        FROM nompersonal np
+        WHERE np.${config.personalFk} = ?
+          AND EXISTS (
+              SELECT 1
+              FROM expediente e
+              WHERE e.personal_id = np.personal_id
+                AND ${EXPEDIENTE_HIERARCHY_CHANGE_CONDITION}
+          )
+    `;
+
+    const updateSql = `
+        UPDATE nompersonal np
+        SET np.${config.personalFk} = ?
+        WHERE np.${config.personalFk} = ?
+          AND NOT EXISTS (
+              SELECT 1
+              FROM expediente e
+              WHERE e.personal_id = np.personal_id
+                AND ${EXPEDIENTE_HIERARCHY_CHANGE_CONDITION}
+          )
+    `;
+
+    const [movableRows] = await connection.execute(selectSql, [fromCodorg]);
+    const [blockedRows] = await connection.execute(blockedSql, [fromCodorg]);
+    const blocked = Number(blockedRows[0].total || 0);
+
+    if (movableRows.length > 0) {
+        report.personalReferenceRepoints.push({
+            table: config.table,
+            field: config.personalFk,
+            fromCodorg,
+            toCodorg,
+            descrip,
+            count: movableRows.length
+        });
+
+        if (!dryRun) {
+            await connection.execute(updateSql, [toCodorg, fromCodorg]);
+        }
+    }
+
+    if (blocked > 0) {
+        report.personalReferenceBlocked.push({
+            table: config.table,
+            field: config.personalFk,
+            fromCodorg,
+            toCodorg,
+            descrip,
+            count: blocked
+        });
+    }
+
+    return {
+        moved: movableRows.length,
+        blocked,
+        remaining: blocked
+    };
+}
+
 async function resolveDuplicates(connection, config, canonicalMap, state, report) {
     const rows = await loadTableData(connection, config.table);
     const grouped = new Map();
@@ -500,7 +582,6 @@ async function resolveDuplicates(connection, config, canonicalMap, state, report
         }
 
         rowsWithRefs.sort((a, b) => {
-            if (b.refs.totalRefs !== a.refs.totalRefs) return b.refs.totalRefs - a.refs.totalRefs;
             if (Number(canonical && b.row.descrip === canonical.value) !== Number(canonical && a.row.descrip === canonical.value)) {
                 return Number(canonical && b.row.descrip === canonical.value) - Number(canonical && a.row.descrip === canonical.value);
             }
@@ -568,7 +649,20 @@ async function resolveDuplicates(connection, config, canonicalMap, state, report
                 }
             }
 
-            if (duplicate.refs.personalRefs === 0) {
+            let remainingPersonalRefs = duplicate.refs.personalRefs;
+            if (duplicate.refs.personalRefs > 0) {
+                const repointResult = await repointNompersonalReferences(
+                    connection,
+                    config,
+                    duplicate.row.codorg,
+                    keeper.row.codorg,
+                    duplicate.row.descrip,
+                    report
+                );
+                remainingPersonalRefs = repointResult.remaining;
+            }
+
+            if (remainingPersonalRefs === 0) {
                 report.deletedDuplicates.push({
                     table: config.table,
                     codorg: duplicate.row.codorg,
@@ -586,7 +680,7 @@ async function resolveDuplicates(connection, config, canonicalMap, state, report
                     table: config.table,
                     codorg: duplicate.row.codorg,
                     descrip: duplicate.row.descrip,
-                    personalRefs: duplicate.refs.personalRefs
+                    personalRefs: remainingPersonalRefs
                 });
             }
         }
@@ -613,10 +707,13 @@ async function consolidateRowsToExpectedParent(connection, config, key, expected
     }
 
     rowsWithRefs.sort((a, b) => {
-        if (b.refs.totalRefs !== a.refs.totalRefs) return b.refs.totalRefs - a.refs.totalRefs;
         if (Number(b.row.gerencia === expectedParentCodorg) !== Number(a.row.gerencia === expectedParentCodorg)) {
             return Number(b.row.gerencia === expectedParentCodorg) - Number(a.row.gerencia === expectedParentCodorg);
         }
+        if (a.row.gerencia === expectedParentCodorg && b.row.gerencia === expectedParentCodorg) {
+            return a.row.codorg - b.row.codorg;
+        }
+        if (b.refs.totalRefs !== a.refs.totalRefs) return b.refs.totalRefs - a.refs.totalRefs;
         return a.row.codorg - b.row.codorg;
     });
 
@@ -659,7 +756,20 @@ async function consolidateRowsToExpectedParent(connection, config, key, expected
             }
         }
 
-        if (item.refs.personalRefs === 0) {
+        let remainingPersonalRefs = item.refs.personalRefs;
+        if (item.refs.personalRefs > 0) {
+            const repointResult = await repointNompersonalReferences(
+                connection,
+                config,
+                item.row.codorg,
+                keeper.row.codorg,
+                item.row.descrip,
+                report
+            );
+            remainingPersonalRefs = repointResult.remaining;
+        }
+
+        if (remainingPersonalRefs === 0) {
             report.deletedDuplicates.push({
                 table: config.table,
                 codorg: item.row.codorg,
@@ -677,7 +787,7 @@ async function consolidateRowsToExpectedParent(connection, config, key, expected
                 table: config.table,
                 codorg: item.row.codorg,
                 descrip: item.row.descrip,
-                personalRefs: item.refs.personalRefs
+                personalRefs: remainingPersonalRefs
             });
         }
     }
@@ -1249,6 +1359,18 @@ function writeManualReviewLog(report) {
         lines.push(`- ficha ${item.ficha} | ${item.numero_carnet} | ${item.apenom} | ${item.nivel5} | ${item.reason}`);
     }
 
+    lines.push('');
+    lines.push(`Nompersonal reapuntados por limpieza de duplicados: ${report.personalReferenceRepoints.length}`);
+    for (const item of report.personalReferenceRepoints) {
+        lines.push(`- ${item.table} | ${item.field} | ${item.descrip} | ${item.fromCodorg} -> ${item.toCodorg} | ${item.count} colaboradores`);
+    }
+
+    lines.push('');
+    lines.push(`Nompersonal bloqueados por expediente en limpieza de duplicados: ${report.personalReferenceBlocked.length}`);
+    for (const item of report.personalReferenceBlocked) {
+        lines.push(`- ${item.table} | ${item.field} | ${item.descrip} | ${item.fromCodorg} -> ${item.toCodorg} | ${item.count} colaboradores`);
+    }
+
     fs.writeFileSync('log_revision_manual_niveles.txt', `${lines.join('\n')}\n`, 'utf8');
 }
 
@@ -1258,6 +1380,7 @@ function printReport(report) {
     printSection('Ajustes de gerencia', report.parentUpdates, item => `${item.table} ${item.codorg} "${item.descrip}": ${item.from ?? 'NULL'} -> ${item.to} (${item.parent})`);
     printSection('Ajustes de descripcion', report.descriptionUpdates, item => `${item.table} ${item.codorg}: "${item.from}" -> "${item.to}" (${item.reason})`);
     printSection('Ajustes en nompersonal.codnivel4', report.personalLevel4Updates, item => `ficha ${item.ficha} ${item.apenom}: ${item.from ?? 'NULL'} -> ${item.to} (${item.nivel4})`);
+    printSection('Reapuntes en nompersonal por duplicados', report.personalReferenceRepoints, item => `${item.table}.${item.field} ${item.fromCodorg} -> ${item.toCodorg} (${item.count} colaboradores, ${item.descrip})`);
     printSection('Conflictos auto-resueltos', report.autoResolvedConflicts, item => `${item.table} "${item.child}" -> ${item.parent} (${item.reason})`);
     printSection('Reapuntes de hijos', report.childRepoints, item => `${item.childTable}: ${item.count} registros ${item.fromCodorg} -> ${item.toCodorg}`);
     printSection('Duplicados eliminables/eliminados', report.deletedDuplicates, item => `${item.table} ${item.codorg} "${item.descrip}"`);
@@ -1267,6 +1390,7 @@ function printReport(report) {
     printSection('Nompersonal omitidos por expediente', report.personalSkippedByExpediente, item => `ficha ${item.ficha} ${item.apenom} (${item.nivel5})`);
     printSection('Nompersonal omitidos por inconsistencia', report.personalSkippedMismatch, item => `ficha ${item.ficha} ${item.apenom} (${item.nivel5})`);
     printSection('Nompersonal omitidos por padre faltante', report.personalSkippedNoParent, item => `ficha ${item.ficha} ${item.apenom}: ${item.reason}`);
+    printSection('Nompersonal bloqueados por expediente en duplicados', report.personalReferenceBlocked, item => `${item.table}.${item.field} ${item.fromCodorg} -> ${item.toCodorg} (${item.count} colaboradores, ${item.descrip})`);
     console.log('\nLog de revision manual: log_revision_manual_niveles.txt');
 }
 
@@ -1287,7 +1411,9 @@ async function main() {
         personalLevel4Updates: [],
         personalSkippedByExpediente: [],
         personalSkippedMismatch: [],
-        personalSkippedNoParent: []
+        personalSkippedNoParent: [],
+        personalReferenceRepoints: [],
+        personalReferenceBlocked: []
     };
 
     try {
